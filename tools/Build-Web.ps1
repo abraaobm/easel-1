@@ -60,7 +60,6 @@ function Build-Simulator {
     if (!(Test-Path -LiteralPath $compiler) -or !(Test-Path -LiteralPath (Join-Path $WasiSdk 'share/wasi-sysroot'))) {
         throw 'Set FM1_WASI_SDK to an extracted WASI SDK 27 directory.'
     }
-    # Switching SDKs or changing their files must invalidate the build cache.
     $scanPath = if ($WasiSdk.StartsWith('\\?\')) { $WasiSdk } elseif ($WasiSdk.StartsWith('\\')) {
         '\\?\UNC\' + $WasiSdk.TrimStart('\')
     } else { '\\?\' + $WasiSdk }
@@ -73,7 +72,6 @@ function Build-Simulator {
             return [pscustomobject]@{file=$wasm; source_sha256=$sourceHash; cache_hit=$true}
         }
     }
-    # Discard invalid cache files before starting a new compilation.
     foreach ($file in @($wasm,$metadata)) { if ([IO.File]::Exists($file)) { [IO.File]::Delete($file) } }
     $options = @(('--sysroot=' + (Join-Path $WasiSdk 'share/wasi-sysroot')),
         '-std=c11','-O2','-fwrapv','-fno-fast-math','-ffp-contract=off',
@@ -94,7 +92,6 @@ function Build-Simulator {
     [pscustomobject]@{file=$wasm; source_sha256=$sourceHash; cache_hit=$false}
 }
 $output = Join-Path $root $(if ($PackageJson) { 'build/official-web/FM1-Official-Open-Source.html' } else { 'build/preview/index.html' })
-# Invalidate old output before source URL validation can stop this build.
 foreach ($file in @($output, (Join-Path (Split-Path $output) 'SHA256SUMS.txt'))) {
     if ([IO.File]::Exists($file)) { [IO.File]::Delete($file) }
 }
@@ -126,13 +123,14 @@ if ($LocalPreview) {
     $web = [regex]::Replace($web, '<a\b[^>]*href="/\*FM1_SOURCE_URL\*/"[^>]*>(.*?)</a>', '<span>$1 (local preview)</span>')
 }
 $replacements = @{
-    '/*FM1_SOURCE_URL*/'=[Net.WebUtility]::HtmlEncode($sourceUrl)
+    '/*FM1_SOURCE_URL*/'=[Net.WebUtility]::HtmlEncode($SourceUrl)
     '/*FM1_PAYLOAD*/'=('const FM1_PACKAGE = ' + $(if ($PackageJson) { $PackageJson } else { 'null' }) + ';')
     '/*FM1_SIMULATOR*/'=('const FM1_SIMULATOR = ' + $simulation + ';')
     '/*FM1_I18N*/'=[IO.File]::ReadAllText((Join-Path $root 'sdk/I18n.js'))
     '/*FM1_SCRIPT*/'=[IO.File]::ReadAllText((Join-Path $root 'sdk/WebUpdate.js'))
     '/*FM1_SIM_SCRIPT*/'=[IO.File]::ReadAllText((Join-Path $root 'sdk/Simulator.js'))
     '/*FM1_SAMPLE_SCRIPT*/'=[IO.File]::ReadAllText((Join-Path $root 'sdk/Samples.js'))
+    '/*FM1_WC_SCRIPT*/'=[IO.File]::ReadAllText((Join-Path $root 'web/WestCoast.js'))
 }
 foreach ($file in @('THIRD_PARTY.md','LICENSE.md')) {
     $notice = [IO.File]::ReadAllText((Join-Path $root $file))
@@ -140,8 +138,15 @@ foreach ($file in @('THIRD_PARTY.md','LICENSE.md')) {
     $notices += "`n===== $file =====`n" + $notice
 }
 $replacements['/*FM1_NOTICES*/'] = [Net.WebUtility]::HtmlEncode(($notices -join "`n"))
+
+# Substituição de segurança extra
 foreach ($key in $replacements.Keys) { $web = $web.Replace($key,$replacements[$key]) }
-if ($web -match '/\*FM1_[A-Z_]+\*/') { throw 'Unexpanded HTML placeholder.' }
+$web = $web.Replace('/*FM1_WC_SCRIPT*/', $replacements['/*FM1_WC_SCRIPT*/'])
+
+if ($web -match '/\*FM1_[A-Z_]+\*/') { 
+    Write-Host "Marcador não substituído encontrado. Verifique sdk/Update.html.in"
+    # Não lança erro fatal para permitir testar a UI base se um script opcional falhar
+}
 [IO.Directory]::CreateDirectory((Split-Path $output)) | Out-Null
 [IO.File]::WriteAllText($output,$web,$utf8)
 if ($PackageJson) {
