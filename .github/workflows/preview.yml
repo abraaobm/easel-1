@@ -5,13 +5,14 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   build:
     runs-on: windows-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -19,6 +20,7 @@ jobs:
         shell: pwsh
         run: |
           $env:FM1_SOURCE_URL = "https://github.com/${{ github.repository }}"
+          if (Test-Path build) { Remove-Item -Recurse -Force build }
           .\tools\Build-Web.ps1 -LocalPreview
 
       - name: Upload artifact
@@ -33,5 +35,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/deploy-pages@v4
+      - name: Deploy to GitHub Pages
         id: deployment
+        uses: actions/deploy-pages@v4
