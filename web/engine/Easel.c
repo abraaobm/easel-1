@@ -25,41 +25,36 @@ typedef struct {
 
 static easel_voice_t voices[8];
 
-// Parâmetros Globais (VOICE)
+// Parâmetros Globais
 static float p_shape = 0.0f;
 static float p_fold = 0.2f;
 static float p_decay = 0.5f;
 static float p_lpg = 0.5f;
 
-// Function Generator (MOTION)
 static float p_rise = 0.1f;
 static float p_fall = 0.3f;
 static int p_loop = 0;
 static float p_route = 0.0f;
 
-// Euclidean (MOTION - EUCLID)
 static float p_euclid_rate = 0.2f;
 static float p_euclid_pulses = 0.3f;
 
-// Source of Uncertainty (RANDOM)
 static float p_rand_rate = 0.5f;
 static float p_rand_amt = 0.0f;
 static float p_rand_target = 0.0f;
 static float p_rand_smooth = 0.0f;
 
-// Space / Pitch (SPACE)
 static float p_pitch_amt = 0.5f;
 static float p_pitch_decay = 0.2f;
 static float p_reverb_mix = 0.3f;
 static float p_reverb_time = 0.5f;
 
-// Sequenciador / Quantizador (SEQUENCE)
-static float p_seq_transpose = 0.5f; // -12 a +12 semitons
-static float p_seq_octave = 0.5f;    // -2 a +2 oitavas
-static float p_seq_quantize = 0.0f;  // 0 = Livre, 1 = Pentatônica
-static float p_seq_timbre = 0.5f;    // Resposta do timbre à nota (não usado no momento)
+// Quantizador (SEQUENCE)
+static float p_seq_transpose = 0.5f;
+static float p_seq_octave = 0.5f;
+static float p_seq_quantize = 0.0f;
 
-// Estados Internos
+// Estados
 static float fg_phase = 0.0f;
 static float fg_out = 0.0f;
 static uint8_t fg_running = 0;
@@ -104,7 +99,6 @@ static float osc_morph(float phase, float shape) {
 void easel_note_on(uint8_t note, uint8_t vel) {
     if (!vel) return;
     
-    // --- QUANTIZADOR MUSICAL ---
     int transposed = note;
     transposed += (int)((p_seq_transpose - 0.5f) * 24.0f);
     transposed += (int)((p_seq_octave - 0.5f) * 4.0f) * 12;
@@ -192,7 +186,6 @@ void easel_set_param(int param, float val) {
     if (param == 18) p_seq_transpose = val;
     if (param == 19) p_seq_octave = val;
     if (param == 20) p_seq_quantize = val;
-    if (param == 21) p_seq_timbre = val;
 }
 
 void easel_mix(int32_t *out, unsigned frames) {
@@ -200,7 +193,7 @@ void easel_mix(int32_t *out, unsigned frames) {
     memset(out, 0, frames * 2 * sizeof(int32_t));
 
     for (unsigned i = 0; i < frames; i++) {
-        // --- Function Generator (MOTION) ---
+        // Function Generator
         if (p_loop == 2) {
             float rate_hz = 0.5f + p_euclid_rate * 9.5f;
             euclid_clock += rate_hz / sample_rate;
@@ -244,7 +237,7 @@ void easel_mix(int32_t *out, unsigned frames) {
             }
         }
 
-        // --- Source of Uncertainty (RANDOM) ---
+        // Random
         float rand_rate_hz = 0.1f + p_rand_rate * 19.9f;
         rand_phase += rand_rate_hz / sample_rate;
         if (rand_phase >= 1.0f) {
