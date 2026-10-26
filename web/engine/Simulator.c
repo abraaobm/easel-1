@@ -27,6 +27,7 @@ static unsigned gate, midi_read, midi_write, midi_reset;
 static uint8_t radio_features, radio_role;
 static struct { uint8_t data[3], count; } midi[MIDI_QUEUE];
 static int32_t previous[FM1_BLOCK_WORDS];
+static int32_t scratch_audio[FM1_BLOCK_WORDS]; // Buffer para o sequenciador do FM1
 static float output[FM1_BLOCK_WORDS];
 static int16_t *sample_input;
 static uint8_t *sample_encoded;
@@ -347,7 +348,6 @@ EXPORT("sim_arp") unsigned sim_arp(unsigned track)
            (groove_arp_setting(track, 4) << 17) | (groove_arp_setting(track, 5) << 23);
 }
 
-/* NOVO: O simulador chama o motor Easel-1 em vez da DX7 */
 EXPORT("sim_render") const float *sim_render(void)
 {
     if (midi_reset) { const uint8_t reset = 255; send(&reset, 1); midi_reset = 0; }
@@ -355,11 +355,13 @@ EXPORT("sim_render") const float *sim_render(void)
         send(midi[midi_read].data, midi[midi_read].count); midi_read = (midi_read + 1) % MIDI_QUEUE;
     }
     
-    // Gera o áudio do Easel-1 diretamente
+    // 1. Processa o sequenciador nativo do FM-1 (avança clock, etc)
+    // O áudio gerado aqui é descartado, apenas os disparos MIDI importam.
+    (void)fm1_engine_render(scratch_audio, FM1_BLOCK_FRAMES);
+    
+    // 2. O nosso motor Easel-1 gera o áudio que realmente ouvimos
     easel_mix(previous, FM1_BLOCK_FRAMES);
     
-    // Converte para float direto no buffer de output, IGNORANDO o fm1_output_mix
-    // (pois o master gain do engine original está zerado já que não o chamamos).
     for (unsigned i = 0; i < FM1_BLOCK_WORDS; ++i)
         output[i] = (float)previous[i] * (1.0f / 8388608.0f);
     
