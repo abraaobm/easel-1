@@ -1,10 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
 /* Modified 2026-10-17: reserve the final flash sector during sample imports.
+ * Modified 2026-10-24: expose Easel FM layer (easel_* commands). */
 (() => {
   'use strict';
-  // One portable C instance owns the panel, project and sound state. Before
-  // audio is enabled it runs on the page; its complete memory moves to the
-  // audio thread at a C-call boundary, preserving edits and the current page.
   function coreRuntime() {
     const sameBytes=(a,b)=>{
       if(!a||a.length!==b.length)return false;
@@ -37,16 +35,17 @@
           case 'panic': c.sim_panic(); break;
           case 'tapTempo': c.sim_tap_tempo(); break;
           case 'select': result=c.sim_select(message.track,message.source); break;
-          case 'easel_enter':    result=c.sim_easel_enter(message.track); break;
-          case 'easel_leave':    c.sim_easel_leave(message.track); break;
-          case 'easel_adjust':   result=c.sim_easel_adjust(message.track,message.knob,message.delta); break;
-          case 'easel_reset':    result=c.sim_easel_reset_patch(message.track); break;
+          
+          case 'easel_enter':   result=c.sim_easel_enter(message.track); break;
+          case 'easel_leave':   c.sim_easel_leave(message.track); break;
+          case 'easel_adjust':  result=c.sim_easel_adjust(message.track,message.page,message.knob,message.delta); break;
           case 'easel_read':
             c.sim_easel_read(message.track);
-            data=new Uint8Array(c.memory.buffer,c.sim_easel_read_buf(),16).slice();
+            data=new Uint8Array(c.memory.buffer,c.sim_easel_read_buf(),4).slice();
             break;
           case 'easel_set_page': c.sim_easel_set_page(message.track,message.page); break;
           case 'easel_page':     data=c.sim_easel_page(message.track); break;
+
           case 'open': result=c.sim_open(message.page); if(result)throw Error('当前音源不支持此编辑页。'); break;
           case 'preset': result=c.sim_preset(message.index); break;
           case 'step': result=c.sim_step(message.index,message.toggle?1:0); break;
@@ -89,8 +88,6 @@
           case 'samples': {
             if (!(message.data instanceof Uint8Array) || message.data.length<512 || message.data.length>446464) throw Error('采样库长度无效');
             const flash=new Uint8Array(c.memory.buffer,c.sim_flash()+69632,466944),previous=flash.slice();
-            // Keep the final 20480 bytes (DX7 library and per-project tuning). The full backup
-            // still permits rollback of a pre-cap bank on validation failure.
             flash.fill(255,0,446464);flash.set(message.data);
             result=c.sim_sample_bank(message.data.length);
             if(result){
@@ -113,8 +110,6 @@
         const labels=new Uint8Array(c.memory.buffer,c.sim_knobs(),128);
         const bytes=new Uint8Array(c.memory.buffer,targets,count*64),words=new Int32Array(c.memory.buffer,targets,count*16);
         const first=c.sim_step_first(),context=c.sim_lcd_context(),mask=c.sim_lcd_mask();
-        // Retain decoded labels until their C bytes or edit context changes.
-        // Copies own their memory and remain valid across WASM memory growth.
         if(!this.screen||this.screen.first!==first||this.screen.context!==context||this.screen.mask!==mask||
             !sameBytes(this.labels,labels)||!sameBytes(this.targets,bytes)){
           this.labels=labels.slice();this.targets=bytes.slice();
@@ -162,7 +157,6 @@
       }
       render() {
         this.audioAt=this.c.sim_render();this.position=0;
-        // Rebind only after memory grows. The C output block has a fixed address.
         if(!this.buffer||this.buffer.buffer!==this.c.memory.buffer)
           this.buffer=new Float32Array(this.c.memory.buffer,this.audioAt,this.blockFrames*2);
       }
@@ -186,8 +180,6 @@
         if(this.buffer.buffer!==this.c.memory.buffer)
           this.buffer=new Float32Array(this.c.memory.buffer,this.audioAt,this.blockFrames*2);
         if(this.ratio===1&&length>=2) {
-          // Keep the same two-sample lookahead and C render boundaries as the
-          // resampler, while copying whole runs at the native 44.1 kHz rate.
           left[0]=this.a[0];left[1]=this.b[0];
           if(right){right[0]=this.a[1];right[1]=this.b[1];}
           for(let i=2;i<length;) {
@@ -303,11 +295,7 @@
   function send(type,args={}){if(ready)dispatch({type,...args});}
   function request(type,args={}) {
     if(!ready)return Promise.reject(Error('仿真尚未载入'));
-    // These operations release/reset the C controls. Clear their page-side
-    // owners too, so a stale latch cannot suppress the next press.
     if(['select','import','clear','open','step'].includes(type))release();
-    // Presets retain already sounding Play keys, but must cancel gestures
-    // still waiting for audio permission on the previous project.
     if(type==='preset'){wakingPlay=undefined;wakingKeys.clear();}
     const id=++sequence;return new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>{pending.delete(id);reject(Error('仿真操作超时'));},7000);
@@ -318,8 +306,6 @@
   async function select(track,source) {
     try {await request('select',{track,source});}
     catch(error){
-      // Failed allocation leaves the C project unchanged. Restore the visible
-      // selection too; an unchanged frame will not rewrite these controls.
       if(state){$('sim-track').value=state[0];$('sim-source').value=state[8+state[0]*20];}
       throw error;
     }
@@ -416,9 +402,6 @@
     if(!item||!ready)return;
     send('lcd',{context:lcdScreen.context,action:item.action,index:item.index,owner:item.owner,delta});
   }
-  // Trackpads report many small pixel deltas; wheel notches report large deltas.
-  // Keep one fine step per notch, accumulate small movements, and leave browser
-  // zoom (Ctrl/Meta + wheel) untouched.
   function lcdWheel(button,getItem){
     let amount=0,last=0,direction=0,context;
     const reset=()=>{amount=last=direction=0;};
@@ -463,429 +446,4 @@
     const items=screen.targets.slice();
     for(let col=0;col<4;col++)if(screen.mask&(1<<col)){
       const [label,value]=screen.knobs[col];
-      items.push({rect:[6+59*col,195,54,32],action:0,index:col,owner:state[0],label,value,knob:col});
-    }
-    lcdItems=new Map(items.map(item=>[lcdId(item),item]));
-    if(lcdDialog.open){if(lcdItems.has(lcdEditing))lcdValue();else closeLcd();}
-    const lengths=state[1]===0?state.subarray(209,217).join(','):state[209+state[0]];
-    const key=screen.context+':'+screen.first+':'+lengths+':'+items.map(item=>[lcdId(item),...item.rect].join(',')).join(';');
-    const host=$('sim-lcd-targets');
-    if(key!==lcdKey){
-      lcdKey=key;host.replaceChildren();
-      const target=(x,y,w,h,label,fn)=>{
-        const button=document.createElement('button');button.className='lcd-target';
-        Object.assign(button.style,{left:x/2.4+'%',top:y/2.4+'%',width:w/2.4+'%',height:h/2.4+'%'});
-        FM1I18n.attr(button,'aria-label',label);FM1I18n.attr(button,'title',label);
-        button.onclick=()=>action(fn);host.append(button);return button;
-      };
-      if(state[1]===0){
-        for(let t=0;t<8;t++){
-          target(5,48+t*18,72,16,'轨道 '+(t+1),()=>select(t,6));
-          for(let i=0;i<16;i++){
-            const step=screen.first+i;
-            if(step>=state[209+t])continue;
-            target(80+i*8,48+t*18,8,16,'T'+(t+1)+' / STEP '+(step+1),async()=>{await select(t,6);await request('step',{index:step});}).tabIndex=-1;
-          }
-        }
-      }else if(state[1]===1){
-        const length=state[209+state[0]];
-        for(let p=0;p<4;p++)if(p*16<length)target(8+p*57,50,53,14,'PAGE '+(p+1),()=>request('step',{index:p*16}));
-        for(let i=0;i<16;i++){
-          const step=screen.first+i;if(step>=length)continue;
-          const cell=target(8+(i%4)*57,72+Math.floor(i/4)*29,53,25,'STEP '+(step+1),()=>request('step',{index:step,toggle:true}));
-          cell.dataset.lcdStep=step;
-          cell.addEventListener('keydown',event=>{
-            const delta={ArrowLeft:-1,ArrowRight:1,ArrowUp:-4,ArrowDown:4}[event.code];if(!delta)return;
-            event.preventDefault();event.stopPropagation();
-            const next=Math.max(screen.first,Math.min(screen.first+15,length-1,step+delta));
-            host.querySelector('[data-lcd-step="'+next+'"]')?.focus();
-          });
-        }
-      }
-      for(const item of items){
-        const id=lcdId(item),button=target(...item.rect,item.label,()=>editLcd(id,button));
-        button.dataset.lcdEdit=id;
-        if(item.knob!==undefined)button.dataset.lcdKnob=item.knob;
-        lcdWheel(button,()=>lcdItems.get(id));
-        button.addEventListener('keydown',event=>{
-          const delta={ArrowLeft:-1,ArrowDown:-1,ArrowRight:1,ArrowUp:1}[event.code];
-          if(delta){event.preventDefault();event.stopPropagation();lcdAdjust(lcdItems.get(id),delta);}
-        });
-      }
-    }
-    for(const cell of host.querySelectorAll('[data-lcd-step]'))cell.tabIndex=Number(cell.dataset.lcdStep)===state[2]?0:-1;
-    for(const button of host.querySelectorAll('[data-lcd-edit]')){
-      const item=lcdItems.get(button.dataset.lcdEdit);
-      button.disabled=!ready||!item;
-      const description=(button.dataset.lcdKnob!==undefined?'K'+(Number(button.dataset.lcdKnob)+1)+' / ':'')+item.label+' / '+item.value;
-      if(button.getAttribute('aria-label')!==description){button.setAttribute('aria-label',description);button.title=description;}
-    }
-  }
-  function deadline(promise,milliseconds,message) {
-    return new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error(message)),milliseconds);Promise.resolve(promise).then(value=>{clearTimeout(timer);resolve(value);},error=>{clearTimeout(timer);reject(error);});});
-  }
-  function setVolume(value) {
-    value=Math.max(0,Math.min(100,value));$('sim-volume').value=value;
-    const master=$('sim-master');if(master){master.style.setProperty('--angle',(-135+value*2.7)+'deg');master.setAttribute('aria-valuenow',String(value));}
-    if(ready)control(3,0,Math.round(value*1023/100));
-    if(gain)gain.gain.setTargetAtTime(audioOn?1:0,context.currentTime,.01);
-  }
-  async function boot() {
-    try {
-      if(!globalThis.WebAssembly||!globalThis.crypto?.subtle)throw Error('此预览环境不支持仿真。请保存 HTML 后，用电脑 Chrome 或 Edge 打开。');
-      wasm=await FM1Web.assetBytes(FM1_SIMULATOR,2097152,'仿真文件校验失败，请重新下载完整工作台。');
-      let flash;try{const saved=localStorage.getItem(storageKey);if(saved)flash=decode(saved);}catch(_){}
-      preview=new globalThis.FM1SimulatorCore(wasm,flash);
-      ready=true;receive(preview.frame(true));availability();setVolume(Number($('sim-volume').value));
-      $('sim-factory').replaceChildren();
-      const choose=document.createElement('option');choose.value='';FM1I18n.text(choose,'选择内置预设…');choose.disabled=true;$('sim-factory').append(choose);
-      (await request('factories')).forEach((name,index)=>{
-        const option=document.createElement('option');option.value=index;option.textContent=String(index+1).padStart(2,'0')+' · '+name;$('sim-factory').append(option);
-      });
-      $('sim-factory').value=workspace?.factory?String(workspace.slot):'';availability();
-      say('已就绪，点琴键或播放即可试听。');
-      const blockFrames=preview.c.sim_block_frames();
-      let last=performance.now(),frames=0;
-      setInterval(()=>{
-        updateMeter();
-        const now=performance.now();frames+=Math.min(40,now-last)*44.1;last=now;
-        const blocks=Math.floor(frames/blockFrames);frames%=blockFrames;
-        if(!ready||handoff)return;
-        if(preview){preview.command({type:'tick',blocks});receive(preview.frame());}
-        else if(context?.state!=='running')send('tick',{blocks});
-      },20);
-    }catch(error){say(error.message);FM1I18n.text($('sim-engine-state'),'载入失败');FM1I18n.text($('sim-placeholder'),error.message);}
-  }
-  function updateMeter() {
-    let peak=0;
-    if(analyser&&audioOn&&context?.state==='running'){
-      analyser.getFloatTimeDomainData(meterData);
-      for(const value of meterData)peak=Math.max(peak,Math.abs(value));
-    }
-    const level=Math.min(100,Math.round(peak*100));
-    $('sim-output-meter').value=level;
-    $('sim-output-meter').setAttribute('aria-valuetext',level+'%');
-  }
-  function start(requested) {
-    if(!startTask)startTask=startAudio(requested).finally(()=>{startTask=undefined;});
-    return startTask;
-  }
-  async function startAudio(requested) {
-    if(starting||!ready)return;
-    const target=typeof requested==='boolean'?requested:!audioOn;
-    if(!target&&!node){audioOn=false;availability();return;}
-    starting=true;availability();let candidate;
-    try {
-      if(node) {
-        if(target&&context.state!=='running')await deadline(context.resume(),2500,'浏览器未开启声音，编辑仍可使用。');
-        audioOn=target;setVolume(Number($('sim-volume').value));
-        say(audioOn?'声音已开启，可用“试听音量”调节。':'声音已关闭，面板与编辑继续运行。');return;
-      }
-      if(!globalThis.AudioContext||!globalThis.AudioWorkletNode)throw Error('浏览器不支持音频线程，请使用电脑 Chrome 或 Edge；当前面板仍可编辑。');
-      context=new AudioContext({sampleRate:44100,latencyHint:'interactive'});
-      await deadline(context.resume(),2500,'浏览器未允许播放声音，面板仍可编辑。');
-      await deadline(context.audioWorklet.addModule('data:text/javascript;charset=utf-8,'+encodeURIComponent(globalThis.FM1SimulatorAudioSource)),3500,'音频模块载入超时，面板仍可编辑。');
-      handoff=true;
-      candidate=new AudioWorkletNode(context,'fm1-engine',{numberOfInputs:0,numberOfOutputs:1,outputChannelCount:[2],processorOptions:{wasm,snapshot:preview.c.memory.buffer.slice(0)}});
-      gain=context.createGain();gain.gain.value=0;
-      analyser=context.createAnalyser();analyser.fftSize=512;meterData=new Float32Array(analyser.fftSize);
-      candidate.connect(gain).connect(analyser).connect(context.destination);
-      await deadline(new Promise((resolve,reject)=>{
-        candidate.onprocessorerror=()=>reject(Error('音频线程启动失败，面板仍可编辑。'));
-        candidate.port.onmessage=e=>{if(e.data.type==='ready')resolve();else receive(e.data);};
-      }),3500,'音频线程没有响应，面板仍可编辑。');
-      node=candidate;preview=null;audioOn=true;
-      node.onprocessorerror=()=>{ready=false;audioOn=false;availability();say('音频线程已停止。请重新载入页面；已保存到本地槽的项目仍在。');};
-      context.onstatechange=()=>{if(context.state!=='running'){audioOn=false;setVolume(Number($('sim-volume').value));say('声音暂时中断，编辑仍可使用。点琴键或重新播放以恢复声音。');}availability();};
-      setVolume(Number($('sim-volume').value));say('声音已开启，面板状态和编辑已保留。');
-    }catch(error){
-      candidate?.disconnect();candidate?.port.close();
-      if(!node&&context)await deadline(context.close().catch(()=>{}),500,'').catch(()=>{});
-      if(!node){context=undefined;gain=undefined;analyser=undefined;meterData=undefined;}audioOn=false;say(error.message);
-    }finally{
-      handoff=false;for(const message of waiting.splice(0))dispatch(message);
-      starting=false;availability();
-    }
-  }
-
-  function control(kind,index,value){
-    // The first key press is delivered after audio starts. A quick tap still
-    // gets a short audible gate; editing keys never get replayed as notes.
-    const key=wakingKeys.get(index);
-    if(kind===1&&key){key.down=!!value;return;}
-    const black=[1,3,5,8,10,13,15,17,20,22];
-    const playable=state&&([0,2,3,4,5,10,15,17].includes(state[1])||(state[1]===1&&state[4]))&&
-      !(state[1]===2&&black.includes(index))&&!(state[1]===5&&state[8+state[0]*20]===1&&[20,22].includes(index));
-    if(kind===1&&value&&!muted&&!audioOn&&playable){
-      const pendingKey={down:true,track:state[0],page:state[1]};wakingKeys.set(index,pendingKey);
-      start(true).then(()=>{
-        if(wakingKeys.get(index)!==pendingKey)return;
-        wakingKeys.delete(index);
-        if(!audioOn||state[0]!==pendingKey.track||state[1]!==pendingKey.page)return;
-        send('control',{kind,index,value:1});
-        if(!pendingKey.down){
-          const owner='wake:'+index;clearTimeout(pulseTimers.get(owner));
-          pulseTimers.set(owner,setTimeout(()=>{pulseTimers.delete(owner);if(!held.has('1:'+index))send('control',{kind,index,value:0});},100));
-        }
-      });return;
-    }
-    if(kind===0&&index===12){
-      if(wakingPlay){
-        if(value&&held.has('0:8'))wakingPlay=undefined;
-        else{wakingPlay.down=!!value;return;}
-      }
-      // Defer the panel/keyboard transport press just like the toolbar. Failed
-      // audio startup must not advance the sequence in a silent preview.
-      // Stopping playback and HOME+PLAY remain immediate without audio.
-      if(value&&!muted&&!audioOn&&!state?.[14]&&!held.has('0:8')){
-        const play={down:true,page:state?.[1],track:state?.[0]};wakingPlay=play;
-        start(true).then(()=>{
-          if(wakingPlay!==play)return;wakingPlay=undefined;
-          if(!audioOn||state?.[1]!==play.page||state?.[0]!==play.track)return;
-          send('control',{kind,index,value:1});
-          if(!play.down)send('control',{kind,index,value:0});
-        });return;
-      }
-    }
-    send('control',{kind,index,value});
-  }
-  const holders=new Map(),latched=new Set(),pulseTimers=new Map();let held=new Set();
-  function syncHolds() {
-    const next=new Set(latched);for(const item of holders.values())next.add(item);
-    for(const item of held)if(!next.has(item)){const [kind,index]=item.split(':').map(Number);control(kind,index,0);}
-    for(const item of next)if(!held.has(item)){const [kind,index]=item.split(':').map(Number);control(kind,index,1);}
-    held=next;
-    for(const element of ui.holds){
-      element.classList.toggle('held',held.has(element.dataset.hold));element.classList.toggle('latched',latched.has(element.dataset.hold));
-      element.setAttribute('aria-pressed',String(held.has(element.dataset.hold)));
-    }
-  }
-  function release(){wakingPlay=undefined;wakingKeys.clear();for(const timer of pulseTimers.values())clearTimeout(timer);pulseTimers.clear();holders.clear();latched.clear();held.clear();send('release');for(const e of ui.holds){e.classList.remove('held','latched');e.setAttribute('aria-pressed','false');}}
-  function feedback(kind,index,element){
-    if(((kind===0&&index===11)||(kind===10&&index===15))&&state?.[1]===10&&lcdScreen?.knobs?.[0]?.[0]==='SYNC'){
-      say('DELAY 页连按 SEQ 或 TAP 设置 BPM；外部 MIDI 时钟下速度只读。');return;
-    }
-    if(kind===0){
-    if(state?.[1]===7){say('蓝牙：K1 总开关，K2 音频，K3 BLE 角色，K4 时钟；PRESETS 选屏幕下方操作，SAVE 执行，清除配对需再次确认。无线连接请在实机操作。');return;}
-    const tips={2:'FX：SELECT 选轨，K1 混响、K2 延迟，0 关闭发送；PRESETS 切换细调页。',3:'SEL：DX7 算子键盘缩放；其他音源打开音高参数页。',10:'ARP：短按开关，长按调参数；ALGORITHM 翻页，第一页调分频／方向／音域／门长，第二页调 Swing／Hold。SELECT 选轨，开关和参数随项目保存，不保存按住的音符。',11:'SEQ：ALGORITHM 翻底部参数页，PRESETS 选步；RHYTHM/REC 页 K4 选循环长度。再按 SEQ 返回基础页并恢复跟随。'};if(tips[index])say(tips[index]);}}
-  function latch(item){latched.has(item)?latched.delete(item):latched.add(item);syncHolds();}
-  function pulse(kind,index) {
-    const owner='click:'+kind+':'+index;clearTimeout(pulseTimers.get(owner));
-    if(holders.delete(owner))syncHolds();
-    holders.set(owner,kind+':'+index);syncHolds();
-    pulseTimers.set(owner,setTimeout(()=>{pulseTimers.delete(owner);holders.delete(owner);syncHolds();},kind===1?100:55));
-  }
-  function hold(element,kind,index) {
-    const item=kind+':'+index;element.dataset.hold=item;
-    element.addEventListener('contextmenu',e=>e.preventDefault());
-    element.addEventListener('pointerdown',event=>{
-      if(element.disabled||event.button!==0&&!(kind===0&&event.button===2))return;event.preventDefault();feedback(kind,index,element);
-      if(kind===0&&(event.shiftKey||event.button===2||latched.has(item))){latch(item);return;}
-      element.setPointerCapture(event.pointerId);holders.set('pointer:'+event.pointerId,item);syncHolds();
-    });
-    const up=event=>{if(holders.delete('pointer:'+event.pointerId))syncHolds();};
-    for(const type of ['pointerup','pointercancel','lostpointercapture'])element.addEventListener(type,up);
-    element.addEventListener('keydown',event=>{if(!element.disabled&&['Enter','Space'].includes(event.code)){event.preventDefault();event.stopPropagation();if(!event.repeat){feedback(kind,index,element);if(kind===0&&(event.shiftKey||latched.has(item)))latch(item);else{holders.set('focus:'+event.code,item);syncHolds();}}}});
-    element.addEventListener('blur',()=>{let changed=false;for(const code of ['Enter','Space'])if(holders.get('focus:'+code)===item){holders.delete('focus:'+code);changed=true;}if(changed)syncHolds();});
-    // Accessibility actions and keyboard-generated clicks may not emit pointer events.
-    element.addEventListener('click',event=>{if(event.detail===0&&!element.disabled){feedback(kind,index,element);if(kind===0&&(event.shiftKey||latched.has(item)))latch(item);else pulse(kind,index);}});
-  }
-  function tap(index){control(0,index,1);control(0,index,0);}
-  function buildControls() {
-    for(let t=0;t<8;t++){
-      const button=document.createElement('button');button.id='sim-track-'+t;button.className='track-tile';button.dataset.sim='';button.disabled=true;
-      button.innerHTML='<span class="track-number">'+String(t+1).padStart(2,'0')+'</span><span class="track-source"></span><span class="track-level"></span><span class="track-steps">'+'<i></i>'.repeat(64)+'</span>';
-      button.addEventListener('click',()=>select(t,6).catch(e=>say(e.message)));$('sim-tracks').append(button);
-      const option=document.createElement('option');option.value=t;FM1I18n.text(option,'轨道 '+(t+1));$('sim-track').append(option);
-    }
-    sources.forEach((name,type)=>{const option=document.createElement('option');option.value=type;option.textContent=name;$('sim-source').append(option);});
-    // Control positions follow the FM-1 faceplate. HTML shapes and handlers are
-    // local implementations; no remote font, image or script is needed.
-    const encoders=[['MASTER',-1,105,100],['SELECT',0,215,100],['PRESETS',6,105,205],['ALGORITHM',1,215,205],['KNOB 1',2,610,100],['KNOB 2',3,714,100],['KNOB 3',4,818,100],['KNOB 4',5,922,100]];
-    for(const [label,index,x,y]of encoders){
-      const box=document.createElement('div');box.className='encoder';box.style.left=(x/10)+'%';box.style.top=(y/6.24)+'%';
-      box.innerHTML='<span>'+label+'</span><button class="dial" data-sim disabled aria-label="'+label+'：拖动、滚轮或点击调节"><i></i></button><div class="detents"><button data-sim disabled aria-label="'+label+' 减少">−</button><button data-sim disabled aria-label="'+label+' 增加">＋</button></div>';
-      const dial=box.querySelector('.dial'),buttons=box.lastElementChild.querySelectorAll('button');dial.dataset.encoder=index;
-      if(index<0){dial.id='sim-master';dial.setAttribute('role','slider');dial.setAttribute('aria-valuemin','0');dial.setAttribute('aria-valuemax','100');}
-      let angle=0,lastY=0,moved=false;
-      const turn=delta=>{if(!ready)return;if(index<0)setVolume(Number($('sim-volume').value)+delta*2);else{angle+=delta*18;dial.style.setProperty('--angle',angle+'deg');control(2,index,delta);}};
-      buttons[0].onclick=()=>turn(-1);buttons[1].onclick=()=>turn(1);
-      dial.addEventListener('wheel',event=>{if(dial.disabled||!event.deltaY||event.ctrlKey||event.metaKey||Math.abs(event.deltaX)>Math.abs(event.deltaY))return;event.preventDefault();turn(event.deltaY<0?1:-1);},{passive:false});
-      dial.addEventListener('pointerdown',event=>{if(dial.disabled||event.button!==0)return;event.preventDefault();lastY=event.clientY;moved=false;dial.setPointerCapture(event.pointerId);});
-      dial.addEventListener('pointermove',event=>{if(!dial.hasPointerCapture(event.pointerId))return;const delta=Math.trunc((lastY-event.clientY)/6);if(delta){moved=true;lastY-=delta*6;turn(Math.max(-20,Math.min(20,delta)));}});
-      dial.addEventListener('pointerup',event=>{if(dial.hasPointerCapture(event.pointerId)&&!moved)turn(event.shiftKey?-1:1);});
-      dial.addEventListener('click',event=>{if(event.detail===0)turn(event.shiftKey?-1:1);});
-      dial.addEventListener('keydown',event=>{if(['ArrowUp','ArrowRight','ArrowDown','ArrowLeft'].includes(event.code)){event.preventDefault();event.stopPropagation();turn(event.code==='ArrowUp'||event.code==='ArrowRight'?1:-1);}});
-      FM1I18n.scan(box);$('sim-device').append(box);
-    }
-    const buttons=[['OCT −',0,60,258,90,34],['OCT ＋',1,170,258,90,34]];
-    ['FX','SEL','ENV','LFO','EDIT','GLO'].forEach((n,i)=>buttons.push([n,2+i,582+i*63,174,54,48]));
-    ['HOME','SAVE','ARP','SEQ','PLAY','REC'].forEach((n,i)=>buttons.push([n,8+i,582+i*63,236,54,48]));
-    for(const [label,id,x,y,w,h]of buttons){
-      const button=document.createElement('button');if(id!==12)FM1I18n.text(button,label);button.className='panel-button';button.dataset.sim='';button.dataset.led=id;button.dataset.button=id;button.disabled=true;
-      Object.assign(button.style,{left:x/10+'%',top:y/6.24+'%',width:w/10+'%',height:h/6.24+'%'});
-      FM1I18n.attr(button,'title',label+'（Shift 点击或右击可锁定按住）');
-      if(id===12)button.innerHTML='PLAY<small>STOP</small>';hold(button,0,id);$('sim-device').append(button);
-    }
-    const whites=[0,2,4,6,7,9,11,12,14,16,18,19,21,23,24,26],edits=[1,3,5,8,10,13,15,17,20,22],names=['OP1','OP2','OP3','OP4','OP5','OP6','PITCH','GLOBAL','MONO','POLY'];
-    for(let key=0;key<27;key++){
-      const white=whites.indexOf(key),button=document.createElement('button');button.className='piano-key '+(white>=0?'white':'black');button.dataset.sim='';button.dataset.led=key+14;button.dataset.key=key;button.disabled=true;
-      const center=white>=0?white+.5:whites.filter(k=>k<key).length;
-      button.style.left=(center*100/16)+'%';
-      button.innerHTML='<i></i><span>'+(white>=0?String(white+1).padStart(2,'0'):names[edits.indexOf(key)]||'')+'</span>';
-      FM1I18n.attr(button,'aria-label',white>=0?'音符／步 '+(white+1):names[edits.indexOf(key)]||'升音键');hold(button,1,key);$('sim-keyboard').append(button);
-    }
-  }
-
-  async function action(fn){try{await fn();}catch(error){say(error.message);}}
-  $('sim-start').onclick=()=>{muted=!muted;return start(!muted);};$('sim-panic').onclick=()=>{release();send('panic');};
-  $('sim-tap-tempo').onclick=()=>send('tapTempo');
-  $('sim-play-control').onclick=()=>action(async()=>{
-    if(starting)return;
-    release();
-    if(!state?.[14]&&!muted&&!audioOn){
-      const play={page:state?.[1],track:state?.[0]};wakingPlay=play;
-      await start(true);
-      if(wakingPlay!==play)return;wakingPlay=undefined;
-      if(!audioOn||state?.[1]!==play.page||state?.[0]!==play.track)return;
-    }
-    // PLAY on the preset browser loads its selection. The toolbar controls
-    // transport only; other editors keep their page and cursor while playing.
-    if(state?.[1]===16)send('open',{page:0});
-    tap(12);
-  });
-  $('sim-save-control').onclick=()=>{release();send('open',{page:0});tap(9);};
-  $('sim-save-device').onclick=()=>action(async()=>{release();await globalThis.FM1Workbench.save(await request('export'));});
-  for(const button of document.querySelectorAll('[data-sim-page]'))button.onclick=()=>action(async()=>{
-    release();await request('open',{page:Number(button.dataset.simPage)});
-    $('sim-device').scrollIntoView({behavior:'smooth',block:'center'});
-    say('已打开'+FM1I18n.sourceText(button)+'；用面板旋钮调整，HOME 返回。');
-  });
-  $('sim-volume').oninput=()=>setVolume(Number($('sim-volume').value));
-  $('sim-track').onchange=()=>action(()=>select(Number($('sim-track').value),6));
-  $('sim-source').onchange=()=>action(async()=>{
-    const track=Number($('sim-track').value),source=Number($('sim-source').value);
-    if(confirm(FM1I18n.t('切换音源将重置此轨的音色；鼓与旋律之间切换还会清空此轨步进。继续吗？')))await select(track,source);
-    else $('sim-source').value=String(state[8+track*20]);
-  });
-  $('sim-project-export').onclick=()=>action(async()=>{save(FM1Web.projectFile(await request('export')),'FM1-simulation.fm1');say('已导出仿真工作区项目。');});
-  async function loadPreset(index){
-    if(presetBusy||!Number.isInteger(index)||index<0||index>=16)return;
-    presetBusy=true;availability();
-    try{
-      await request('preset',{index});
-      $('sim-factory').value=String(index);
-      say('已载入 '+$('sim-factory').selectedOptions[0].textContent+'。');
-    }finally{presetBusy=false;availability();}
-  }
-  $('sim-factory-load').onclick=()=>action(()=>loadPreset(Number($('sim-factory').value)));
-  $('sim-factory').onchange=()=>action(()=>loadPreset(Number($('sim-factory').value)));
-  $('sim-preset-prev').onclick=()=>action(()=>loadPreset(workspace?.factory?Math.max(0,workspace.slot-1):0));
-  $('sim-preset-next').onclick=()=>action(()=>loadPreset(workspace?.factory?Math.min(15,workspace.slot+1):0));
-  $('sim-factory-export').onclick=()=>action(async()=>{
-    const index=Number($('sim-factory').value),data=await request('factory',{index});
-    save(FM1Web.projectFile(data),'FM1-'+String(index+1).padStart(2,'0')+'-'+String.fromCharCode(...data.slice(3836,3848)).trim()+'.fm1');
-    say('官方工程已导出，当前仿真工作区保持不变。');
-  });
-  $('sim-timbre-export').onclick=()=>action(async()=>{save(FM1Web.timbreFile(await request('export',{timbre:true})),'FM1-timbre.fm1t');say('已导出当前轨道的音源类型与全部音色参数。');});
-  $('sim-patch-export').onclick=()=>action(async()=>{save(FM1Web.voiceFile(await request('export',{patch:true})),'FM1-voice.syx');say('已导出当前轨道的 DX7 音色。');});
-  for(let i=0;i<128;i++){const o=document.createElement('option');o.value=i;o.textContent=(i+1)+' · '+String.fromCharCode(65+(i>>5));$('sim-library-slot').append(o);}
-  $('sim-library-save').onclick=()=>action(async()=>{
-    const program=Number($('sim-library-slot').value),patch=selectedFile?.patch?voices[Number($('sim-voice').value)]:await request('export',{patch:true});
-    const raw=await request('library-read',{bank:program>>5});raw.set(FM1Web.packVoice(patch),(program&31)*128);
-    await request('library-write',{bank:program>>5,data:raw});say('已保存到仿真独立音色库的音色 '+(program+1)+'。');
-  });
-  $('sim-library-bank').onclick=()=>action(async()=>{
-    const bank=Number($('sim-library-slot').value)>>5,raw=selectedFile?.bank||FM1Web.voiceBank(voices);
-    if(!confirm(FM1I18n.t('用文件替换所选位置所在组的全部 32 个仿真音色？')))return;
-    await request('library-write',{bank,data:raw});say('整组音色已写入仿真库。');
-  });
-  $('sim-library-export').onclick=()=>action(async()=>{
-    const bank=Number($('sim-library-slot').value)>>5;save(FM1Web.bankFile(await request('library-read',{bank})),'FM1-bank-'+String.fromCharCode(65+bank)+'.syx');
-  });
-  $('sim-file').onchange=async()=>{
-    const revision=++fileRevision;selectedFile=undefined;voices=[];$('sim-voice').replaceChildren();$('sim-voice').hidden=true;availability();const file=$('sim-file').files[0];if(!file)return;
-    try {
-    if(file.size>4280)throw Error('请选择 .fm1 项目、.fm1t 音色或 DX7 .syx 文件');const bytes=new Uint8Array(await file.arrayBuffer());
-    if(revision!==fileRevision)return;
-    if(bytes[0]===240){voices=FM1Web.readVoices(bytes);voices.forEach((voice,i)=>{const option=document.createElement('option');option.value=i;option.textContent=(i+1)+' · '+String.fromCharCode(...voice.slice(145,155)).replace(/[^\x20-\x7e]/g,'?');$('sim-voice').append(option);});selectedFile={patch:true,bank:bytes.length===4104?bytes.slice(6,4102):undefined};}
-    else if(bytes[3]===84) selectedFile={timbre:true,data:FM1Web.readTimbreFile(bytes)};
-    else selectedFile={data:FM1Web.readProjectFile(bytes)};
-    $('sim-voice').hidden=!selectedFile.patch;availability();say(selectedFile.patch&&state[8+state[0]*20]!==0?'音色校验通过，请先选择 DX7 轨道再导入。':'文件校验通过，点击“导入到仿真”应用。');
-    }catch(error){if(revision===fileRevision)say(error.message);}
-  };
-  $('sim-file-apply').onclick=()=>action(async()=>{
-    if(!selectedFile)return;if(!confirm(FM1I18n.t('将替换仿真工作区'+(selectedFile.patch?'当前 DX7 音色':selectedFile.timbre?'当前轨道音色':'项目')+'，继续吗？')))return;
-    const data=selectedFile.patch?voices[Number($('sim-voice').value)]:selectedFile.data;
-    await request('import',{patch:!!selectedFile.patch,timbre:!!selectedFile.timbre,data});say('已导入仿真工作区；按面板 SAVE 保存到本地仿真槽。');
-  });
-  $('sim-read-device').onclick=()=>action(async()=>{
-    if(!ready)throw Error('请先启动仿真');
-    const data=await globalThis.FM1Workbench.read();
-    await request('import',{data});rememberDeviceSnapshot(data,'read');say('设备项目已载入仿真工作区。');
-  });
-  $('sim-clear').onclick=()=>action(async()=>{if(confirm(FM1I18n.t('清空此浏览器的 16 个仿真项目槽并恢复默认音源？采样库和试听音量保留，设备上的内容不受影响。'))){await request('clear');say('本地项目存档已清空，采样库和试听音量已保留。');}});
-  $('sim-midi').onclick=()=>action(async()=>{
-    if(midiConnecting)return;
-    if(!ready)throw Error('请先启动仿真');if(!navigator.requestMIDIAccess)throw Error('此浏览器不支持 MIDI 输入，请使用电脑 Chrome 或 Edge');
-    midiConnecting=true;availability();
-    try{
-    const audioReady=muted?Promise.resolve():start(true);
-    const access=await deadline(navigator.requestMIDIAccess({sysex:false}),30000,
-      'MIDI 访问尚未就绪。请检查网站 MIDI 权限；若已允许且没有弹窗，请重启浏览器后重试。');await audioReady;
-    if(midiAccess)midiAccess.onstatechange=null;midiAccess=access;
-    const refresh=()=>{
-      if(midiInput&&(midiInput.state!=='connected'||access.inputs.get(midiInput.id)!==midiInput)){midiInput.onmidimessage=null;midiInput=undefined;release();send('panic');say('MIDI 输入已断开，仿真音符已释放。');}
-      $('sim-midi-port').replaceChildren();const empty=document.createElement('option');empty.value='';FM1I18n.text(empty,'选择 MIDI 输入');$('sim-midi-port').append(empty);
-      for(const port of access.inputs.values()){if(port.state!=='connected')continue;const option=document.createElement('option');option.value=port.id;option.textContent=port.name;$('sim-midi-port').append(option);}
-      $('sim-midi-port').value=midiInput?.id||'';
-    };
-    access.onstatechange=refresh;refresh();$('sim-midi-port').hidden=false;
-    $('sim-midi-port').onchange=()=>{
-      if(midiInput)midiInput.onmidimessage=null;
-      midiInput=access.inputs.get($('sim-midi-port').value);release();send('panic');
-      if(midiInput)midiInput.onmidimessage=event=>{
-        if(!ready)return;
-        const data=new Uint8Array(event.data);
-        // Keep note-offs, controllers and clock ordering while audio resumes.
-        send('midi',{data});
-        const playing=(data[0]&0xf0)===0x90&&data[2]>0||data[0]===0xfa||data[0]===0xfb;
-        // The statechange notification can lag behind the next MIDI event.
-        if(playing&&!muted&&(!audioOn||context?.state!=='running'))start(true);
-      };
-    };
-    say($('sim-midi-port').options.length>1?'选择一个输入端口；MIDI 通道沿用设备的轨道映射。':'未发现 MIDI 输入设备。');
-    }finally{midiConnecting=false;availability();}
-  });
-  const keyCodes=['KeyZ','KeyS','KeyX','KeyD','KeyC','KeyF','KeyV','KeyB','KeyH','KeyN','KeyJ','KeyM','Comma','KeyL','Period','Semicolon','Slash','Quote','KeyQ','Digit2','KeyW','Digit3','KeyE','KeyR','Digit5','KeyT','Digit6'];
-  window.addEventListener('keydown',event=>{
-    if(!ready||$('tab-sim').hidden||document.hidden||document.querySelector('dialog[open]'))return;
-    if(event.code==='Escape'){release();send('panic');return;}
-    if(event.ctrlKey||event.metaKey||event.altKey||/INPUT|SELECT|TEXTAREA|SUMMARY|A/.test(event.target.tagName))return;
-    if(event.code==='Space'){if(event.target.tagName==='BUTTON')return;event.preventDefault();if(!event.repeat)tap(12);return;}
-    const index=keyCodes.indexOf(event.code);if(index<0)return;event.preventDefault();if(!event.repeat){holders.set('keyboard:'+event.code,'1:'+index);syncHolds();}
-  });
-  window.addEventListener('keyup',event=>{const keyboard=holders.delete('keyboard:'+event.code),focus=holders.delete('focus:'+event.code);if(keyboard||focus){event.preventDefault();syncHolds();}});
-  window.addEventListener('blur',release);document.addEventListener('visibilitychange',()=>{if(document.hidden)release();});
-  document.addEventListener('fm1-view-change',()=>{if($('tab-sim').hidden)release();});
-  buildControls();
-  const ui={
-    controls:document.querySelectorAll('[data-sim]'),holds:document.querySelectorAll('[data-hold]'),
-    leds:Array.from(document.querySelectorAll('[data-led]'),button=>[button,168+Number(button.dataset.led)]),
-    tracks:Array.from({length:8},(_,t)=>{const button=$('sim-track-'+t);return{button,source:button.querySelector('.track-source'),level:button.querySelector('.track-level'),dots:button.querySelectorAll('i')};})
-  };
-
- /* Easel FM Web API */
-  globalThis.FM1Easel = {
-    enter:   track => request('easel_enter',  {track}),
-    leave:   track => request('easel_leave',  {track}),
-    adjust:  (track, page, knob, delta) => request('easel_adjust', {track, page, knob, delta}),
-    read:    track => request('easel_read',   {track}),
-    page:    track => request('easel_page',   {track}),
-    setPage: (track, page) => request('easel_set_page', {track, page}),
-    currentTrack: () => state ? state[0] : 0,
-    select:  (track) => request('select', {track, source: 6}), // Force UI update
-  };
-
-  availability();boot();
-})();
+      items.push({rect:[6+59*col,195,54,32],action:0,index:col,owner:
