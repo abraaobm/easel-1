@@ -86,12 +86,12 @@ void easel_mix(int32_t *out, unsigned frames) {
             if (voices[v].phase >= 1.0f) voices[v].phase -= 1.0f;
             float raw = osc_morph(voices[v].phase, p_shape);
             
+            // Wavefolder corrigido (Buchla 259 style)
             float fold_depth = 1.0f + p_fold * 6.0f;
             float u = raw * fold_depth;
-            u = fmodf(u + 1.0f, 2.0f);
-            if (u < 0.0f) u += 2.0f;
-            if (u > 1.0f) u = 2.0f - u;
-            float folded = u - 1.0f;
+            while (u > 1.0f) u = 2.0f - u;
+            while (u < -1.0f) u = -2.0f - u;
+            float folded = u;
             
             float base_cutoff = 100.0f + p_lpg * 10000.0f;
             float cutoff = base_cutoff * (0.05f + 0.95f * voices[v].env);
@@ -102,13 +102,12 @@ void easel_mix(int32_t *out, unsigned frames) {
             
             float lpg_out = voices[v].lpg_low * voices[v].env;
             
-            // FIX: Tempo de decaimento real (0.1s até 2.1s)
+            // Envelope mais longo para o LPG "segurar" o timbre
             float decay_time = 0.1f + p_decay * 2.0f;
             float decay_rate = expf(-1.0f / (decay_time * 44100.0f));
             voices[v].env *= decay_rate; 
             if (voices[v].env < 0.0001f) voices[v].active = 0;
             
-            // FIX: Boost no volume para compensar a perda do mixer original
             mixed += (lpg_out * voices[v].velocity) * 4.0f;
         }
         out[i * 2] += (int32_t)(mixed * 8388608.0f);
