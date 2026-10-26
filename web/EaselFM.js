@@ -157,7 +157,6 @@
       el.querySelector('.easel-val').textContent = def.labels[idx];
       el.querySelector('.easel-valbar > i').style.width = (idx * 50) + '%';
     } else {
-      // No modo TRANSPOSE, mostra o valor real em semitons
       if (page === 4 && knobIdx === 0) {
           let v = Math.round(val - 50);
           el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
