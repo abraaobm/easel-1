@@ -119,6 +119,3 @@ void easel_mix(int32_t *out, unsigned frames) {
         out[i * 2 + 1] += (int32_t)(mixed * 8388608.0f);
     }
 }
-
-EXPORT("sim_easel_note") void sim_easel_note(uint8_t note, uint8_t vel) { easel_note_on(note, vel); }
-EXPORT("sim_easel_param") void sim_easel_param(int param, float val) { easel_set_param(param, val); }
