@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
-/* Easel-1 Core DSP Engine - Com Sequenciador CV/Gate */
+/* Easel-1 Core DSP Engine - Puro Sintetizador West Coast */
 #include <math.h>
 #include <string.h>
 #include <stdint.h>
@@ -49,11 +49,11 @@ static float p_pitch_decay = 0.2f;
 static float p_reverb_mix = 0.3f;
 static float p_reverb_time = 0.5f;
 
-// Sequenciador Próprio (SEQUENCE)
-static float p_seq_run = 0.0f;      // 0 = Off, 1 = On
-static float p_seq_tempo = 0.5f;    // Velocidade
-static float p_seq_pitch = 0.5f;    // Transposição base (semitons)
-static float p_seq_timbre = 0.0f;   // Modulação do Fold por passo
+// Sequenciador Global Modifiers (SEQUENCE)
+static float p_seq_transpose = 0.5f; // -12 a +12
+static float p_seq_octave = 0.5f;    // -2 a +2
+static float p_seq_timbre = 0.5f;    // Modulação global do Fold
+static float p_seq_lpg_offset = 0.5f;// Modulação global do LPG
 
 // Estados
 static float fg_phase = 0.0f;
@@ -63,12 +63,6 @@ static uint8_t fg_running = 0;
 static float euclid_clock = 0.0f;
 static int euclid_step = 0;
 static int euclid_bucket = 0;
-
-static float seq_clock = 0.0f;
-static int seq_step = 0;
-static uint8_t seq_note = 0;
-static uint8_t seq_was_running = 0;
-static float seq_fold_mod = 1.0f;
 
 static float rand_phase = 0.0f;
 static float rand_out = 0.0f;
@@ -103,13 +97,20 @@ static float osc_morph(float phase, float shape) {
     }
 }
 
+// Chamado pelo midi_router.c quando o sequenciador/teclado dispara uma nota
 void easel_note_on(uint8_t note, uint8_t vel) {
     if (!vel) return;
     
-    float base_freq = 440.0f * powf(2.0f, (note - 69) / 12.0f);
+    int transposed = note;
+    transposed += (int)((p_seq_transpose - 0.5f) * 24.0f);
+    transposed += (int)((p_seq_octave - 0.5f) * 4.0f) * 12;
+    
+    if (transposed < 0) transposed = 0;
+    if (transposed > 127) transposed = 127;
+    float base_freq = 440.0f * powf(2.0f, (transposed - 69) / 12.0f);
 
     for (int i = 0; i < 8; i++) {
-        if (voices[i].active && voices[i].note == note) {
+        if (voices[i].active && voices[i].note == transposed) {
             voices[i].env = 1.0f;
             voices[i].phase = 0.0f;
             voices[i].pitch_env = 1.0f;
@@ -124,7 +125,7 @@ void easel_note_on(uint8_t note, uint8_t vel) {
     for (int i = 0; i < 8; i++) {
         if (!voices[i].active) {
             voices[i].active = 1;
-            voices[i].note = note;
+            voices[i].note = transposed;
             voices[i].freq = base_freq;
             voices[i].phase = 0.0f;
             voices[i].env = 1.0f;
@@ -144,7 +145,7 @@ void easel_note_on(uint8_t note, uint8_t vel) {
         if (voices[i].env < min_env) { min_env = voices[i].env; steal = i; }
     }
     voices[steal].active = 1;
-    voices[steal].note = note;
+    voices[steal].note = transposed;
     voices[steal].freq = base_freq;
     voices[steal].phase = 0.0f;
     voices[steal].env = 1.0f;
@@ -176,10 +177,10 @@ void easel_set_param(int param, float val) {
     if (param == 15) p_reverb_time = val;
     if (param == 16) p_euclid_rate = val;
     if (param == 17) p_euclid_pulses = val;
-    if (param == 18) p_seq_run = val;
-    if (param == 19) p_seq_tempo = val;
-    if (param == 20) p_seq_pitch = val;
-    if (param == 21) p_seq_timbre = val;
+    if (param == 18) p_seq_transpose = val;
+    if (param == 19) p_seq_octave = val;
+    if (param == 20) p_seq_timbre = val;
+    if (param == 21) p_seq_lpg_offset = val;
 }
 
 void easel_mix(int32_t *out, unsigned frames) {
@@ -187,40 +188,7 @@ void easel_mix(int32_t *out, unsigned frames) {
     memset(out, 0, frames * 2 * sizeof(int32_t));
 
     for (unsigned i = 0; i < frames; i++) {
-        // --- Sequenciador Próprio ---
-        if (p_seq_run > 0.5f) {
-            if (!seq_was_running) {
-                seq_clock = 0.0f;
-                seq_step = -1;
-                seq_was_running = 1;
-            }
-            float seq_rate_hz = 1.0f + p_seq_tempo * 15.0f;
-            seq_clock += seq_rate_hz / sample_rate;
-            if (seq_clock >= 1.0f) {
-                seq_clock -= 1.0f;
-                if (seq_note > 0) easel_note_on(seq_note, 0); // Desliga a nota anterior
-                
-                seq_step = (seq_step + 1) % 8;
-                static const int seq_intervals[8] = {0, 3, 5, 7, 10, 12, 15, 17};
-                seq_note = 60 + seq_intervals[seq_step] + (int)((p_seq_pitch - 0.5f) * 24.0f);
-                if (seq_note > 127) seq_note = 127;
-                if (seq_note < 0) seq_note = 0;
-                
-                easel_note_on(seq_note, 100); // Dispara nova nota
-                
-                static const float seq_timbres[8] = {0.2f, 0.8f, 0.5f, 1.0f, 0.3f, 0.9f, 0.1f, 0.6f};
-                seq_fold_mod = 1.0f + (seq_timbres[seq_step] * p_seq_timbre * 2.0f);
-            }
-        } else {
-            if (seq_was_running && seq_note > 0) {
-                easel_note_on(seq_note, 0);
-                seq_note = 0;
-            }
-            seq_was_running = 0;
-            seq_fold_mod = 1.0f;
-        }
-
-        // --- Function Generator (MOTION) ---
+        // Function Generator
         if (p_loop == 2) {
             float rate_hz = 0.5f + p_euclid_rate * 9.5f;
             euclid_clock += rate_hz / sample_rate;
@@ -264,7 +232,7 @@ void easel_mix(int32_t *out, unsigned frames) {
             }
         }
 
-        // --- Source of Uncertainty (RANDOM) ---
+        // Random
         float rand_rate_hz = 0.1f + p_rand_rate * 19.9f;
         rand_phase += rand_rate_hz / sample_rate;
         if (rand_phase >= 1.0f) {
@@ -279,6 +247,10 @@ void easel_mix(int32_t *out, unsigned frames) {
         float mixed = 0.0f;
         int active_count = 0;
 
+        // Modificadores globais do Sequenciador
+        float seq_global_fold = 1.0f + (p_seq_timbre * 1.5f);
+        float seq_global_lpg = 100.0f + (p_seq_lpg_offset * 5000.0f);
+
         for (int v = 0; v < 8; v++) {
             if (!voices[v].active) continue;
             active_count++;
@@ -289,9 +261,6 @@ void easel_mix(int32_t *out, unsigned frames) {
             fold_mod += (rand_out * 1.0f * (1.0f - p_rand_target));
             pitch_mod *= powf(2.0f, (rand_out * 0.2f * p_rand_target));
 
-            // Adiciona a modulação do sequenciador próprio
-            fold_mod *= seq_fold_mod;
-
             float p_decay_time = 0.01f + p_pitch_decay * 0.5f;
             float p_decay_rate = expf(-1.0f / (p_decay_time * sample_rate));
             voices[v].pitch_env *= p_decay_rate;
@@ -301,7 +270,7 @@ void easel_mix(int32_t *out, unsigned frames) {
             if (voices[v].phase >= 1.0f) voices[v].phase -= 1.0f;
             float raw = osc_morph(voices[v].phase, p_shape);
             
-            float fold_depth = (1.0f + p_fold * 4.0f) * fold_mod;
+            float fold_depth = (1.0f + p_fold * 4.0f) * fold_mod * seq_global_fold;
             float u = raw * fold_depth;
             if (u > 1.0f || u < -1.0f) {
                 u = fmodf(u + 1.0f, 4.0f);
@@ -311,7 +280,7 @@ void easel_mix(int32_t *out, unsigned frames) {
             }
             float folded = u;
             
-            float base_cutoff = 100.0f + p_lpg * 10000.0f;
+            float base_cutoff = seq_global_lpg + p_lpg * 5000.0f;
             float cutoff = base_cutoff * (0.05f + 0.95f * voices[v].env);
             if (cutoff > 18000.0f) cutoff = 18000.0f;
             
