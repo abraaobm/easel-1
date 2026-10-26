@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
-/* Easel-1 Core DSP Engine - Com Random e Smooth */
+/* Easel-1 Core DSP Engine - Com Normalização de Vozes */
 #include <math.h>
 #include <string.h>
 #include <stdint.h>
@@ -22,25 +22,21 @@ typedef struct {
 
 static easel_voice_t voices[8];
 
-// Parâmetros Globais (VOICE)
 static float p_shape = 0.0f;
 static float p_fold = 0.2f;
 static float p_decay = 0.5f;
 static float p_lpg = 0.5f;
 
-// Function Generator (MOTION)
 static float p_rise = 0.1f;
 static float p_fall = 0.3f;
 static float p_loop = 0.0f;
 static float p_route = 0.0f;
 
-// Source of Uncertainty (RANDOM)
 static float p_rand_rate = 0.5f;
 static float p_rand_amt = 0.0f;
 static float p_rand_target = 0.0f;
 static float p_rand_smooth = 0.0f;
 
-// Estados Internos
 static float fg_phase = 0.0f;
 static float fg_out = 0.0f;
 static uint8_t fg_running = 0;
@@ -53,7 +49,7 @@ static uint32_t rand_seed = 12345;
 
 static float get_random() {
     rand_seed = (rand_seed * 1103515245 + 12345) & 0x7fffffff;
-    return ((float)rand_seed / 1073741824.0f) - 1.0f; // -1.0 a 1.0
+    return ((float)rand_seed / 1073741824.0f) - 1.0f;
 }
 
 static float osc_morph(float phase, float shape) {
@@ -138,11 +134,9 @@ void easel_set_param(int param, float val) {
 
 void easel_mix(int32_t *out, unsigned frames) {
     static float sample_rate = 44100.0f;
-    
     memset(out, 0, frames * 2 * sizeof(int32_t));
 
     for (unsigned i = 0; i < frames; i++) {
-        // --- Function Generator ---
         if (fg_running) {
             float rise_time = 0.01f + p_rise * 2.0f;
             float fall_time = 0.01f + p_fall * 2.0f;
@@ -157,43 +151,46 @@ void easel_mix(int32_t *out, unsigned frames) {
             }
         }
 
-        // --- Source of Uncertainty (Random) ---
-        float rand_rate_hz = 0.1f + p_rand_rate * 19.9f; // 0.1 Hz a 20 Hz
+        float rand_rate_hz = 0.1f + p_rand_rate * 19.9f;
         rand_phase += rand_rate_hz / sample_rate;
-        
         if (rand_phase >= 1.0f) {
             rand_phase -= 1.0f;
             rand_prev = rand_current;
             rand_current = get_random();
         }
-        
-        // Smooth (0 = S&H abrupto, 1 = Suave)
         float smooth_interp = rand_prev + (rand_current - rand_prev) * rand_phase;
         float target_out = smooth_interp * (1.0f - p_rand_smooth) + rand_current * p_rand_smooth;
-        
-        // Mistura com a intensidade (Amount)
         rand_out = target_out * p_rand_amt;
 
         float mixed = 0.0f;
+        int active_count = 0;
+
         for (int v = 0; v < 8; v++) {
             if (!voices[v].active) continue;
+            active_count++;
             
-            // Aplica a modulação do Function Generator
-            float fold_mod = 1.0f + (fg_out * 3.0f * (1.0f - p_route)); 
-            float pitch_mod = powf(2.0f, (fg_out * 1.5f * p_route));
+            // Modulação mais suave para não estourar o Fold
+            float fold_mod = 1.0f + (fg_out * 1.5f * (1.0f - p_route)); 
+            float pitch_mod = powf(2.0f, (fg_out * 1.0f * p_route)); // Reduzido de 1.5 para 1.0
             
-            // Aplica a modulação do Random
-            fold_mod += (rand_out * 2.0f * (1.0f - p_rand_target));
-            pitch_mod *= powf(2.0f, (rand_out * 0.5f * p_rand_target));
+            fold_mod += (rand_out * 1.0f * (1.0f - p_rand_target));
+            pitch_mod *= powf(2.0f, (rand_out * 0.2f * p_rand_target)); // Reduzido de 0.5 para 0.2
 
             voices[v].phase += (voices[v].freq * pitch_mod) / sample_rate;
             if (voices[v].phase >= 1.0f) voices[v].phase -= 1.0f;
             float raw = osc_morph(voices[v].phase, p_shape);
             
-            float fold_depth = (1.0f + p_fold * 6.0f) * fold_mod;
+            // Limita a profundidade do Fold para evitar loop infinito
+            float fold_depth = (1.0f + p_fold * 4.0f) * fold_mod;
             float u = raw * fold_depth;
-            while (u > 1.0f) u = 2.0f - u;
-            while (u < -1.0f) u = -2.0f - u;
+            
+            // Loop de dobra otimizado e limitado
+            if (u > 1.0f || u < -1.0f) {
+                u = fmodf(u + 1.0f, 4.0f);
+                if (u < 0) u += 4.0f;
+                u = (u > 2.0f) ? 4.0f - u : u;
+                u -= 1.0f;
+            }
             float folded = u;
             
             float base_cutoff = 100.0f + p_lpg * 10000.0f;
@@ -210,9 +207,20 @@ void easel_mix(int32_t *out, unsigned frames) {
             voices[v].env *= decay_rate; 
             if (voices[v].env < 0.0001f) voices[v].active = 0;
             
-            mixed += lpg_out * voices[v].velocity * 0.4f;
+            mixed += lpg_out * voices[v].velocity;
         }
+        
+        // Normalização Dinâmica: quanto mais vozes, menor o ganho individual
+        if (active_count > 1) {
+            mixed /= sqrtf((float)active_count);
+        }
+        
+        // Multiplicador de ganho base
+        mixed *= 0.35f;
+        
+        // Soft Clipping suave
         mixed = tanhf(mixed);
+        
         out[i * 2] += (int32_t)(mixed * 8388608.0f);
         out[i * 2 + 1] += (int32_t)(mixed * 8388608.0f);
     }
