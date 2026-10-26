@@ -32,7 +32,7 @@ static float p_lpg = 0.5f;    // 0..1 (LPG Base Cutoff)
 static float p_rise = 0.1f;   // 0..1 (Tempo de subida)
 static float p_fall = 0.3f;   // 0..1 (Tempo de descida)
 static float p_loop = 0.0f;   // 0 ou 1 (LFO mode)
-static float p_route = 0.0f;  // 0 = Fold, 1 = Pitch
+static float p_route = 0.0f;  // 0 = Fold, 1 = Pitch (agora é um Crossfade)
 
 // Estado do Function Generator (Global)
 static float fg_phase = 0.0f;
@@ -58,12 +58,9 @@ static float osc_morph(float phase, float shape) {
 }
 
 void easel_note_on(uint8_t note, uint8_t vel) {
-    if (!vel) {
-        for (int i = 0; i < 8; i++) {
-            if (voices[i].active && voices[i].note == note) voices[i].active = 0;
-        }
-        return;
-    }
+    // FIX: Note Off é ignorado. O LPG (Vactrol) decai no seu próprio tempo.
+    if (!vel) return;
+
     for (int i = 0; i < 8; i++) {
         if (!voices[i].active) {
             voices[i].active = 1;
@@ -78,7 +75,6 @@ void easel_note_on(uint8_t note, uint8_t vel) {
             fg_phase = 0.0f;
             fg_out = 0.0f;
             fg_running = 1;
-            
             break;
         }
     }
@@ -101,7 +97,7 @@ void easel_mix(int32_t *out, unsigned frames) {
     memset(out, 0, frames * 2 * sizeof(int32_t));
 
     for (unsigned i = 0; i < frames; i++) {
-        // --- Processa o Function Generator (Roda a 44.1kHz) ---
+        // --- Processa o Function Generator ---
         if (fg_running) {
             float rise_time = 0.01f + p_rise * 2.0f;
             float fall_time = 0.01f + p_fall * 2.0f;
@@ -127,14 +123,10 @@ void easel_mix(int32_t *out, unsigned frames) {
         for (int v = 0; v < 8; v++) {
             if (!voices[v].active) continue;
             
-            // Modulação do FG
-            float fold_mod = 1.0f;
-            float pitch_mod = 1.0f;
-            if (p_route < 0.5f) {
-                fold_mod = 1.0f + (fg_out * 2.0f); // Modula o Fold
-            } else {
-                pitch_mod = powf(2.0f, (fg_out * 12.0f) / 12.0f); // Modula o Pitch (até +1 oitava)
-            }
+            // FIX: Crossfade contínuo entre Fold e Pitch.
+            // Route = 0.0: Apenas Fold | Route = 0.5: Metade de cada | Route = 1.0: Apenas Pitch
+            float fold_mod = 1.0f + (fg_out * 3.0f * (1.0f - p_route)); 
+            float pitch_mod = powf(2.0f, (fg_out * 1.5f * p_route));
             
             voices[v].phase += (voices[v].freq * pitch_mod) / sample_rate;
             if (voices[v].phase >= 1.0f) voices[v].phase -= 1.0f;
@@ -157,6 +149,7 @@ void easel_mix(int32_t *out, unsigned frames) {
             
             float lpg_out = voices[v].lpg_low * voices[v].env;
             
+            // Decaimento do Vactrol
             float decay_time = 0.1f + p_decay * 2.0f;
             float decay_rate = expf(-1.0f / (decay_time * 44100.0f));
             voices[v].env *= decay_rate; 
