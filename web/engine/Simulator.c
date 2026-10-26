@@ -192,7 +192,6 @@ EXPORT("sim_midi_setting") unsigned sim_midi_setting(unsigned track, unsigned pa
 EXPORT("sim_midi_edit") void sim_midi_edit(unsigned track, unsigned parameter, int delta)
 { groove_settings_midi(track, parameter, delta); }
 
-/* Interceptação das notas MIDI para o motor Easel-1 */
 int fm1_midi_post(const uint8_t *data, size_t bytes)
 {
     if (!data || !bytes || bytes > 3 || data[0] < 128) return -1;
@@ -204,7 +203,6 @@ int fm1_midi_post(const uint8_t *data, size_t bytes)
     if (bytes != count) return -1;
     for (size_t i = 1; i < bytes; ++i) if (data[i] >= 128) return -1;
     
-    // Envia notas diretas para o Easel-1
     if ((status & 0xf0) == 0x90) easel_note_on(data[1], data[2]);
     else if ((status & 0xf0) == 0x80) easel_note_on(data[1], 0);
 
@@ -352,15 +350,18 @@ EXPORT("sim_arp") unsigned sim_arp(unsigned track)
 /* NOVO: O simulador chama o motor Easel-1 em vez da DX7 */
 EXPORT("sim_render") const float *sim_render(void)
 {
-    for (unsigned i = 0; i < FM1_BLOCK_WORDS; ++i) output[i] = (float)previous[i] * (1.0f / 8388608.0f);
     if (midi_reset) { const uint8_t reset = 255; send(&reset, 1); midi_reset = 0; }
     while (midi_read != midi_write) {
         send(midi[midi_read].data, midi[midi_read].count); midi_read = (midi_read + 1) % MIDI_QUEUE;
     }
     
-    // Substitui fm1_engine_render pelo Easel-1
+    // Gera o áudio do Easel-1 diretamente
     easel_mix(previous, FM1_BLOCK_FRAMES);
-    fm1_output_mix(previous);
+    
+    // Converte para float direto no buffer de output, IGNORANDO o fm1_output_mix
+    // (pois o master gain do engine original está zerado já que não o chamamos).
+    for (unsigned i = 0; i < FM1_BLOCK_WORDS; ++i)
+        output[i] = (float)previous[i] * (1.0f / 8388608.0f);
     
     frames += FM1_BLOCK_FRAMES; uint32_t next = (uint32_t)(frames * 1000U / 44100U);
     unsigned poll = now_ms / 10U != next / 10U; now_ms = next;
