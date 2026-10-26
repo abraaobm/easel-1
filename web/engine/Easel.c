@@ -57,7 +57,7 @@ static float p_reverb_time = 0.5f;
 static float p_seq_transpose = 0.5f; // -12 a +12 semitons
 static float p_seq_octave = 0.5f;    // -2 a +2 oitavas
 static float p_seq_quantize = 0.0f;  // 0 = Livre, 1 = Pentatônica
-static float p_seq_timbre = 0.5f;    // Resposta do timbre à nota
+static float p_seq_timbre = 0.5f;    // Resposta do timbre à nota (não usado no momento)
 
 // Estados Internos
 static float fg_phase = 0.0f;
@@ -106,13 +106,9 @@ void easel_note_on(uint8_t note, uint8_t vel) {
     
     // --- QUANTIZADOR MUSICAL ---
     int transposed = note;
-    // Transposição em semitons (-12 a +12)
     transposed += (int)((p_seq_transpose - 0.5f) * 24.0f);
-    // Transposição em oitavas (-2 a +2)
     transposed += (int)((p_seq_octave - 0.5f) * 4.0f) * 12;
     
-    // Escala Pentatônica Menor (0, 3, 5, 7, 10)
-    // Mapeamento para a nota da escala mais próxima
     if (p_seq_quantize > 0.5f) {
         static const int penta_map[12] = {0, 0, 3, 3, 5, 5, 5, 7, 7, 10, 10, 10};
         int oct = transposed / 12;
@@ -124,8 +120,6 @@ void easel_note_on(uint8_t note, uint8_t vel) {
     if (transposed < 0) transposed = 0;
     if (transposed > 127) transposed = 127;
     float base_freq = 440.0f * powf(2.0f, (transposed - 69) / 12.0f);
-    // O Timbre (Fold) responde à nota (notas agudas dobram mais)
-    float note_fold_mod = 1.0f + ((transposed - 60) * 0.02f * p_seq_timbre);
 
     for (int i = 0; i < 8; i++) {
         if (voices[i].active && voices[i].note == transposed) {
