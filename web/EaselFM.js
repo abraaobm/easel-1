@@ -4,13 +4,34 @@
   if (typeof document === 'undefined') return;
   const $ = id => document.getElementById(id);
 
-  const wc = { visible: false, api: null, page: 0 };
+  const wc = { visible: false, api: null, page: 0, state: [] };
 
+  // type: 'cont' (contínuo) ou 'switch' (chaveado)
   const PAGES = [
-    { name: 'VOICE', labels: ['SHAPE', 'FOLD', 'DECAY', 'LPG CUTOFF'], defaults: [0, 20, 50, 50] },
-    { name: 'MOTION', labels: ['RISE', 'FALL', 'LOOP', 'ROUTE'], defaults: [10, 30, 0, 0] },
-    { name: 'MOD/RAND', labels: ['RATE', 'AMOUNT', 'TARGET', 'SMOOTH'], defaults: [50, 0, 0, 0] }
+    { name: 'VOICE', knobs: [
+      { label: 'SHAPE', type: 'cont', def: 0 },
+      { label: 'FOLD', type: 'cont', def: 20 },
+      { label: 'DECAY', type: 'cont', def: 50 },
+      { label: 'LPG CUTOFF', type: 'cont', def: 50 }
+    ]},
+    { name: 'MOTION', knobs: [
+      { label: 'RISE', type: 'cont', def: 10 },
+      { label: 'FALL', type: 'cont', def: 30 },
+      { label: 'LOOP', type: 'switch', def: 0, labels: ['OFF', 'ON'] },
+      { label: 'ROUTE', type: 'switch', def: 0, labels: ['FOLD', 'PITCH'] }
+    ]},
+    { name: 'MOD/RAND', knobs: [
+      { label: 'RATE', type: 'cont', def: 50 },
+      { label: 'AMOUNT', type: 'cont', def: 0 },
+      { label: 'TARGET', type: 'switch', def: 0, labels: ['TIMBRE', 'PITCH'] },
+      { label: 'SMOOTH', type: 'cont', def: 0 }
+    ]}
   ];
+
+  // Inicializa o estado com os valores padrão
+  for (let p = 0; p < PAGES.length; p++) {
+    wc.state[p] = PAGES[p].knobs.map(k => k.def);
+  }
 
   function waitForApi() {
     return new Promise(resolve => {
@@ -78,8 +99,8 @@
       <div class="easel-knobs">
         ${[0,1,2,3].map(i => `
           <div class="easel-knob" data-easel-knob="${i}">
-            <label>${PAGES[0].labels[i]}</label><div class="easel-val">${PAGES[0].defaults[i]}</div>
-            <div class="easel-valbar"><i style="width:${PAGES[0].defaults[i]}%"></i></div>
+            <label>${PAGES[0].knobs[i].label}</label><div class="easel-val">${PAGES[0].knobs[i].def}</div>
+            <div class="easel-valbar"><i style="width:${PAGES[0].knobs[i].def}%"></i></div>
           </div>`).join('')}
       </div>
       <div class="easel-footer">
@@ -105,25 +126,34 @@
     return btn;
   }
 
+  function updateKnobUI(el, page, knobIdx) {
+    const def = PAGES[page].knobs[knobIdx];
+    const val = wc.state[page][knobIdx];
+    el.querySelector('label').textContent = def.label;
+    
+    if (def.type === 'switch') {
+      el.querySelector('.easel-val').textContent = def.labels[val > 50 ? 1 : 0];
+      el.querySelector('.easel-valbar > i').style.width = (val > 50 ? 100 : 0) + '%';
+    } else {
+      el.querySelector('.easel-val').textContent = Math.round(val);
+      el.querySelector('.easel-valbar > i').style.width = val + '%';
+    }
+  }
+
   function renderPage(page) {
     wc.page = page;
     const panel = $('sim-easel-panel');
     panel.querySelectorAll('[data-easel-page]').forEach(b => {
       b.setAttribute('aria-pressed', String(Number(b.dataset.easelPage) === page));
     });
+    
+    // Carrega os valores salvos em vez de resetar
     panel.querySelectorAll('.easel-knob').forEach(el => {
-      const i = Number(el.dataset.easelKnob);
-      el.querySelector('label').textContent = PAGES[page].labels[i];
-      // Carrega o valor visual da página correspondente (mockup)
-      el.querySelector('.easel-val').textContent = PAGES[page].defaults[i];
-      el.querySelector('.easel-valbar > i').style.width = PAGES[page].defaults[i] + '%';
-      
-      // Reinicializa o parâmetro no motor para a página selecionada
-      if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(page * 4 + i, PAGES[page].defaults[i] / 100);
+      updateKnobUI(el, page, Number(el.dataset.easelKnob));
     });
   }
 
-  function wireKnob(el, knob) {
+  function wireKnob(el, knobIdx) {
     let lastY = 0, moved = false;
     el.addEventListener('pointerdown', e => {
       if (e.button !== 0) return;
@@ -132,20 +162,31 @@
       el.classList.add('drag');
       el.setPointerCapture(e.pointerId);
     });
+    
     el.addEventListener('pointermove', e => {
       if (!el.hasPointerCapture(e.pointerId)) return;
       const d = Math.trunc((lastY - e.clientY) / 4);
       if (d) {
         moved = true; lastY -= d * 4;
-        const current = parseFloat(el.querySelector('.easel-val').textContent) / 100;
-        const next = Math.max(0, Math.min(1, current + (d * 0.01)));
         
-        if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(wc.page * 4 + knob, next);
+        const def = PAGES[wc.page].knobs[knobIdx];
+        let val = wc.state[wc.page][knobIdx];
         
-        el.querySelector('.easel-val').textContent = Math.round(next * 100);
-        el.querySelector('.easel-valbar > i').style.width = (next * 100) + '%';
+        if (def.type === 'switch') {
+            // Nos switches, qualquer movimento inverte o estado
+            val = val > 50 ? 0 : 100;
+        } else {
+            // Contínuo: move 1 unidade por pixel de arrasto
+            val = Math.max(0, Math.min(100, val + d));
+        }
+        
+        wc.state[wc.page][knobIdx] = val;
+        
+        if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(wc.page * 4 + knobIdx, val / 100);
+        updateKnobUI(el, wc.page, knobIdx);
       }
     });
+    
     const up = e => {
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
       el.classList.remove('drag');
@@ -182,13 +223,14 @@
         wireKnob(el, Number(el.dataset.easelKnob));
       });
       
-      // Inicializa o motor com os valores default
-      for (let p = 0; p < 3; p++) {
+      // Envia o estado inicial para o motor
+      for (let p = 0; p < PAGES.length; p++) {
         for (let k = 0; k < 4; k++) {
-          globalThis.FM1Easel.setParam(p * 4 + k, PAGES[p].defaults[k] / 100);
+          if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(p * 4 + k, wc.state[p][k] / 100);
         }
       }
     }
+    renderPage(wc.page); // Restaura o visual para a página atual
   }
 
   async function main() {
