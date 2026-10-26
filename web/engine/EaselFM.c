@@ -111,7 +111,7 @@ EXPORT("sim_easel_set_page") void sim_easel_set_page(unsigned track, unsigned pa
     if (idx < 4) state[idx].page = (uint8_t)(page % 4);
 }
 
-EXPORT("sim_easel_adjust") int sim_easel_adjust(unsigned track, unsigned knob, int delta) {
+EXPORT("sim_easel_adjust") int sim_easel_adjust(unsigned track, unsigned page, unsigned knob, int delta) {
     ensure_init();
     unsigned base = track & ~1U;
     unsigned fm = base;
@@ -119,7 +119,7 @@ EXPORT("sim_easel_adjust") int sim_easel_adjust(unsigned track, unsigned knob, i
     unsigned idx = base / 2;
     if (idx >= 4 || !state[idx].enabled || !delta) return -1;
 
-    unsigned page = state[idx].page;
+    state[idx].page = page; // Sync page
 
     if (page == 0) { // VOICE
         switch (knob) {
@@ -135,7 +135,6 @@ EXPORT("sim_easel_adjust") int sim_easel_adjust(unsigned track, unsigned knob, i
         switch (knob) {
             case 0: // RISE
                 groove_adsr_edit(fm, 0, delta);
-                groove_tone_edit(plk, 0, 2, delta); // Pluck attack (if any)
                 break;
             case 1: // FALL
                 groove_adsr_edit(fm, 1, delta); 
