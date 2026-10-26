@@ -32,10 +32,10 @@
       { label: 'REV TIME', type: 'cont', def: 50 }
     ]},
     { name: 'SEQUENCE', knobs: [
-      { label: 'TRANSPOSE', type: 'cont', def: 50 },
-      { label: 'OCTAVE', type: 'cont', def: 50 },
-      { label: 'SCALE', type: 'switch', def: 0, labels: ['FREE', 'PENTA'] },
-      { label: 'TIMBRE AMT', type: 'cont', def: 50 }
+      { label: 'RUN', type: 'switch', def: 0, labels: ['OFF', 'ON'] },
+      { label: 'TEMPO', type: 'cont', def: 50 },
+      { label: 'PITCH', type: 'cont', def: 50 },
+      { label: 'TIMBRE', type: 'cont', def: 50 }
     ]}
   ];
 
@@ -157,15 +157,7 @@
       el.querySelector('.easel-val').textContent = def.labels[idx];
       el.querySelector('.easel-valbar > i').style.width = (idx * 50) + '%';
     } else {
-      if (page === 4 && knobIdx === 0) {
-          let v = Math.round(val - 50);
-          el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
-      } else if (page === 4 && knobIdx === 1) {
-          let v = Math.round((val - 50) / 25);
-          el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
-      } else {
-          el.querySelector('.easel-val').textContent = Math.round(val);
-      }
+      el.querySelector('.easel-val').textContent = Math.round(val);
       el.querySelector('.easel-valbar > i').style.width = val + '%';
     }
   }
