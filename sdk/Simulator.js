@@ -45,7 +45,8 @@
             break;
           case 'easel_set_page': c.sim_easel_set_page(message.track,message.page); break;
           case 'easel_page':     data=c.sim_easel_page(message.track); break;
-
+          case 'easel_note':    c.sim_easel_note(message.note, message.vel); break;
+          case 'easel_param':   c.sim_easel_param(message.param, message.val); break;
           case 'open': result=c.sim_open(message.page); if(result)throw Error('当前音源不支持此编辑页。'); break;
           case 'preset': result=c.sim_preset(message.index); break;
           case 'step': result=c.sim_step(message.index,message.toggle?1:0); break;
@@ -846,10 +847,10 @@
     tracks:Array.from({length:8},(_,t)=>{const button=$('sim-track-'+t);return{button,source:button.querySelector('.track-source'),level:button.querySelector('.track-level'),dots:button.querySelectorAll('i')};})
   };
 
-    /* Easel-1 Web API */
+  /* Easel-1 Web API */
   globalThis.FM1Easel = {
-    note:    (note, vel) => { if (preview) preview.c.sim_easel_note(note, vel); },
-    setParam: (param, val) => { if (preview) preview.c.sim_easel_param(param, val); },
+    note:    (note, vel) => dispatch({ type: 'easel_note', note, vel }),
+    setParam: (param, val) => dispatch({ type: 'easel_param', param, val }),
   };
 
   availability();boot();
