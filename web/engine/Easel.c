@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
-/* Easel-1 Core DSP Engine - Com Normalização de Vozes */
+/* Easel-1 Core DSP Engine - Com Pitch Env e Reverb */
 #include <math.h>
 #include <string.h>
 #include <stdint.h>
@@ -10,33 +10,46 @@
 #define EXPORT(name)
 #endif
 
+#define REV_BUF_LEN 16384
+
 typedef struct {
     float phase;
     float env;
     float lpg_low;
     float freq;
     float velocity;
+    float pitch_env;
     uint8_t note;
     uint8_t active;
 } easel_voice_t;
 
 static easel_voice_t voices[8];
 
+// Parâmetros Globais (VOICE)
 static float p_shape = 0.0f;
 static float p_fold = 0.2f;
 static float p_decay = 0.5f;
 static float p_lpg = 0.5f;
 
+// Function Generator (MOTION)
 static float p_rise = 0.1f;
 static float p_fall = 0.3f;
 static float p_loop = 0.0f;
 static float p_route = 0.0f;
 
+// Source of Uncertainty (RANDOM)
 static float p_rand_rate = 0.5f;
 static float p_rand_amt = 0.0f;
 static float p_rand_target = 0.0f;
 static float p_rand_smooth = 0.0f;
 
+// Space / Pitch (SPACE)
+static float p_pitch_amt = 0.5f;   // Profundidade do envelope de pitch
+static float p_pitch_decay = 0.2f; // Queda do envelope de pitch
+static float p_reverb_mix = 0.3f;  // Quantidade de reverb
+static float p_reverb_time = 0.5f; // Tamanho da cauda
+
+// Estados Internos
 static float fg_phase = 0.0f;
 static float fg_out = 0.0f;
 static uint8_t fg_running = 0;
@@ -46,6 +59,11 @@ static float rand_out = 0.0f;
 static float rand_current = 0.0f;
 static float rand_prev = 0.0f;
 static uint32_t rand_seed = 12345;
+
+// Buffers da Reverb (Spring)
+static float rev_buf_L[REV_BUF_LEN];
+static float rev_buf_R[REV_BUF_LEN];
+static unsigned rev_idx = 0;
 
 static float get_random() {
     rand_seed = (rand_seed * 1103515245 + 12345) & 0x7fffffff;
@@ -76,6 +94,7 @@ void easel_note_on(uint8_t note, uint8_t vel) {
         if (voices[i].active && voices[i].note == note) {
             voices[i].env = 1.0f;
             voices[i].phase = 0.0f;
+            voices[i].pitch_env = 1.0f; // Dispara Pitch Env
             voices[i].velocity = vel / 127.0f;
             fg_phase = 0.0f;
             fg_running = 1;
@@ -89,6 +108,7 @@ void easel_note_on(uint8_t note, uint8_t vel) {
             voices[i].freq = 440.0f * powf(2.0f, (note - 69) / 12.0f);
             voices[i].phase = 0.0f;
             voices[i].env = 1.0f;
+            voices[i].pitch_env = 1.0f;
             voices[i].velocity = vel / 127.0f;
             voices[i].lpg_low = 0.0f;
             fg_phase = 0.0f;
@@ -110,6 +130,7 @@ void easel_note_on(uint8_t note, uint8_t vel) {
     voices[steal].freq = 440.0f * powf(2.0f, (note - 69) / 12.0f);
     voices[steal].phase = 0.0f;
     voices[steal].env = 1.0f;
+    voices[steal].pitch_env = 1.0f;
     voices[steal].velocity = vel / 127.0f;
     voices[steal].lpg_low = 0.0f;
     fg_phase = 0.0f;
@@ -130,6 +151,10 @@ void easel_set_param(int param, float val) {
     if (param == 9) p_rand_amt = val;
     if (param == 10) p_rand_target = val;
     if (param == 11) p_rand_smooth = val;
+    if (param == 12) p_pitch_amt = val;
+    if (param == 13) p_pitch_decay = val;
+    if (param == 14) p_reverb_mix = val;
+    if (param == 15) p_reverb_time = val;
 }
 
 void easel_mix(int32_t *out, unsigned frames) {
@@ -169,22 +194,28 @@ void easel_mix(int32_t *out, unsigned frames) {
             if (!voices[v].active) continue;
             active_count++;
             
-            // Modulação mais suave para não estourar o Fold
             float fold_mod = 1.0f + (fg_out * 1.5f * (1.0f - p_route)); 
-            float pitch_mod = powf(2.0f, (fg_out * 1.0f * p_route)); // Reduzido de 1.5 para 1.0
+            float pitch_mod = powf(2.0f, (fg_out * 1.0f * p_route));
             
             fold_mod += (rand_out * 1.0f * (1.0f - p_rand_target));
-            pitch_mod *= powf(2.0f, (rand_out * 0.2f * p_rand_target)); // Reduzido de 0.5 para 0.2
+            pitch_mod *= powf(2.0f, (rand_out * 0.2f * p_rand_target));
+
+            // Pitch Envelope (O "Bloop" do Easel)
+            // Decai de 1.0 para 0.0, modulando o pitch a uma taxa definida
+            float p_decay_time = 0.01f + p_pitch_decay * 0.5f;
+            float p_decay_rate = expf(-1.0f / (p_decay_time * sample_rate));
+            voices[v].pitch_env *= p_decay_rate;
+            
+            // O Pitch Env joga o pitch para cima (ou para baixo se p_pitch_amt for negativo)
+            float p_env_mod = powf(2.0f, (voices[v].pitch_env * p_pitch_amt * 1.5f));
+            pitch_mod *= p_env_mod;
 
             voices[v].phase += (voices[v].freq * pitch_mod) / sample_rate;
             if (voices[v].phase >= 1.0f) voices[v].phase -= 1.0f;
             float raw = osc_morph(voices[v].phase, p_shape);
             
-            // Limita a profundidade do Fold para evitar loop infinito
             float fold_depth = (1.0f + p_fold * 4.0f) * fold_mod;
             float u = raw * fold_depth;
-            
-            // Loop de dobra otimizado e limitado
             if (u > 1.0f || u < -1.0f) {
                 u = fmodf(u + 1.0f, 4.0f);
                 if (u < 0) u += 4.0f;
@@ -210,18 +241,33 @@ void easel_mix(int32_t *out, unsigned frames) {
             mixed += lpg_out * voices[v].velocity;
         }
         
-        // Normalização Dinâmica: quanto mais vozes, menor o ganho individual
-        if (active_count > 1) {
-            mixed /= sqrtf((float)active_count);
-        }
-        
-        // Multiplicador de ganho base
+        if (active_count > 1) mixed /= sqrtf((float)active_count);
         mixed *= 0.35f;
-        
-        // Soft Clipping suave
         mixed = tanhf(mixed);
+
+        // --- Spring Reverb (Stereo Delay) ---
+        // O tempo de delay varia de 50ms a 150ms (simula a mola)
+        int delay_samples = (int)(4410.0f + p_reverb_time * 2205.0f); 
+        if (delay_samples >= REV_BUF_LEN) delay_samples = REV_BUF_LEN - 1;
         
-        out[i * 2] += (int32_t)(mixed * 8388608.0f);
-        out[i * 2 + 1] += (int32_t)(mixed * 8388608.0f);
+        int read_idx = (rev_idx - delay_samples + REV_BUF_LEN) % REV_BUF_LEN;
+        float delayed_L = rev_buf_L[read_idx];
+        float delayed_R = rev_buf_R[read_idx];
+        
+        // Cross-feedback (esquerda alimenta direita e vice-versa)
+        float feedback = 0.7f + p_reverb_time * 0.29f; // Max 0.99
+        rev_buf_L[rev_idx] = mixed + delayed_R * feedback;
+        rev_buf_R[rev_idx] = mixed + delayed_L * feedback;
+        rev_idx = (rev_idx + 1) % REV_BUF_LEN;
+
+        float out_L = mixed * (1.0f - p_reverb_mix) + delayed_L * p_reverb_mix;
+        float out_R = mixed * (1.0f - p_reverb_mix) + delayed_R * p_reverb_mix;
+        
+        // Limita a saída final para evitar estouro com a reverb
+        out_L = tanhf(out_L);
+        out_R = tanhf(out_R);
+
+        out[i * 2] += (int32_t)(out_L * 8388608.0f);
+        out[i * 2 + 1] += (int32_t)(out_R * 8388608.0f);
     }
 }
