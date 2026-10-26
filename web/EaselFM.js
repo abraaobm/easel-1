@@ -31,6 +31,12 @@
       { label: 'P. DECAY', type: 'cont', def: 20 },
       { label: 'REV MIX', type: 'cont', def: 30 },
       { label: 'REV TIME', type: 'cont', def: 50 }
+    ]},
+    { name: 'SEQUENCE', knobs: [
+      { label: 'TEMPO', type: 'cont', def: 0 },
+      { label: 'STEPS', type: 'cont', def: 50 },
+      { label: 'PITCH AMT', type: 'cont', def: 50 },
+      { label: 'TIMBRE AMT', type: 'cont', def: 0 }
     ]}
   ];
 
@@ -58,6 +64,7 @@
       .easel-header{display:flex;align-items:center;gap:8px;
         border-bottom:1px solid #33691e;padding-bottom:6px;margin-bottom:10px}
       .easel-header strong{color:#8bc34a;letter-spacing:.1em;font-size:12px;text-shadow:0 0 5px #8bc34a50}
+      .easel-header span { color:#689f38; font-size:10px; margin-left:4px; }
       .easel-header #easel-close{background:none;border:none;color:#aed581;
         font-size:18px;cursor:pointer;padding:0 4px;line-height:1;margin-left:auto}
       .easel-header #easel-close:hover{color:#ff8a65}
@@ -95,7 +102,7 @@
     panel.hidden = true;
     panel.innerHTML = `
       <div class="easel-header">
-        <strong>EASEL-1 SYNTH</strong>
+        <strong>EASEL-1 <span>v2.0</span></strong>
         <button id="easel-close" aria-label="Close">×</button>
       </div>
       <div class="easel-nav">
@@ -168,8 +175,39 @@
     });
   }
 
+  function applyValue(el, page, knobIdx, val) {
+    wc.state[page][knobIdx] = val;
+    updateKnobUI(el, page, knobIdx);
+
+    if (globalThis.FM1Easel) {
+        // SEQUENCE usa parâmetros 18 a 21 em vez de 16 a 19
+        let paramIdx = page === 4 ? 18 + knobIdx : page * 4 + knobIdx;
+
+        if (page === 1 && knobIdx === 2) {
+            globalThis.FM1Easel.setParam(6, val / 100);
+            updateKnobUI(el.parentElement.querySelector('[data-easel-knob="0"]'), 1, 0);
+            updateKnobUI(el.parentElement.querySelector('[data-easel-knob="1"]'), 1, 1);
+            if (val > 66) { // EUCLID
+                globalThis.FM1Easel.setParam(16, wc.state[1][0] / 100);
+                globalThis.FM1Easel.setParam(17, wc.state[1][1] / 100);
+            } else { // LFO ou OFF
+                globalThis.FM1Easel.setParam(4, wc.state[1][0] / 100);
+                globalThis.FM1Easel.setParam(5, wc.state[1][1] / 100);
+            }
+        } else if (page === 1 && knobIdx === 0) {
+            globalThis.FM1Easel.setParam(wc.state[1][2] > 66 ? 16 : 4, val / 100);
+        } else if (page === 1 && knobIdx === 1) {
+            globalThis.FM1Easel.setParam(wc.state[1][2] > 66 ? 17 : 5, val / 100);
+        } else {
+            globalThis.FM1Easel.setParam(paramIdx, val / 100);
+        }
+    }
+  }
+
   function wireKnob(el, knobIdx) {
     let lastY = 0, moved = false;
+    const def = PAGES[wc.page].knobs[knobIdx];
+    
     el.addEventListener('pointerdown', e => {
       if (e.button !== 0) return;
       e.preventDefault();
@@ -183,53 +221,37 @@
       const d = Math.trunc((lastY - e.clientY) / 4);
       if (d) {
         moved = true; lastY -= d * 4;
-        
-        const def = PAGES[wc.page].knobs[knobIdx];
-        let val = wc.state[wc.page][knobIdx];
+        const current = wc.state[wc.page][knobIdx];
+        let next = current;
         
         if (def.type === 'switch') {
-            val = val > 50 ? 0 : 100;
+            next = current > 50 ? 0 : 100;
         } else if (def.type === 'switch3') {
-            if (val < 25) val = 50;
-            else if (val < 75) val = 100;
-            else val = 0;
+            if (current < 25) next = 50;
+            else if (current < 75) next = 100;
+            else next = 0;
         } else {
-            val = Math.max(0, Math.min(100, val + d));
+            next = Math.max(0, Math.min(100, current + d));
         }
-        
-        wc.state[wc.page][knobIdx] = val;
-        
-        if (globalThis.FM1Easel) {
-            if (wc.page === 1 && knobIdx === 2) {
-                // LOOP mudou de estado. Atualiza o visual e envia os parâmetros corretos
-                updateKnobUI(el, wc.page, knobIdx);
-                globalThis.FM1Easel.setParam(6, val / 100);
-                // Reenvia os knobs 0 e 1 com o rótulo correto
-                updateKnobUI(el.parentElement.querySelector('[data-easel-knob="0"]'), 1, 0);
-                updateKnobUI(el.parentElement.querySelector('[data-easel-knob="1"]'), 1, 1);
-                if (val > 66) { // EUCLID
-                    globalThis.FM1Easel.setParam(16, wc.state[1][0] / 100);
-                    globalThis.FM1Easel.setParam(17, wc.state[1][1] / 100);
-                } else { // LFO ou OFF
-                    globalThis.FM1Easel.setParam(4, wc.state[1][0] / 100);
-                    globalThis.FM1Easel.setParam(5, wc.state[1][1] / 100);
-                }
-            } else if (wc.page === 1 && knobIdx === 0) {
-                globalThis.FM1Easel.setParam(wc.state[1][2] > 66 ? 16 : 4, val / 100);
-            } else if (wc.page === 1 && knobIdx === 1) {
-                globalThis.FM1Easel.setParam(wc.state[1][2] > 66 ? 17 : 5, val / 100);
-            } else {
-                globalThis.FM1Easel.setParam(wc.page * 4 + knobIdx, val / 100);
-            }
-        }
-        
-        updateKnobUI(el, wc.page, knobIdx);
+        applyValue(el, wc.page, knobIdx, next);
       }
     });
     
     const up = e => {
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
       el.classList.remove('drag');
+      
+      if (!moved && def.type !== 'cont') {
+          const current = wc.state[wc.page][knobIdx];
+          let next;
+          if (def.type === 'switch') next = current > 50 ? 0 : 100;
+          else if (def.type === 'switch3') {
+              if (current < 25) next = 50;
+              else if (current < 75) next = 100;
+              else next = 0;
+          }
+          applyValue(el, wc.page, knobIdx, next);
+      }
     };
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', up);
@@ -265,7 +287,10 @@
       
       for (let p = 0; p < PAGES.length; p++) {
         for (let k = 0; k < 4; k++) {
-          if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(p * 4 + k, wc.state[p][k] / 100);
+          if (globalThis.FM1Easel) {
+              let paramIdx = p === 4 ? 18 + k : p * 4 + k;
+              globalThis.FM1Easel.setParam(paramIdx, wc.state[p][k] / 100);
+          }
         }
       }
     }
