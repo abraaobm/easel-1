@@ -846,16 +846,10 @@
     tracks:Array.from({length:8},(_,t)=>{const button=$('sim-track-'+t);return{button,source:button.querySelector('.track-source'),level:button.querySelector('.track-level'),dots:button.querySelectorAll('i')};})
   };
 
-  /* Easel FM Web API */
+    /* Easel-1 Web API */
   globalThis.FM1Easel = {
-    enter:   track => request('easel_enter',  {track}),
-    leave:   track => request('easel_leave',  {track}),
-    adjust:  (track, page, knob, delta) => request('easel_adjust', {track, page, knob, delta}),
-    read:    track => request('easel_read',   {track}),
-    page:    track => request('easel_page',   {track}),
-    setPage: (track, page) => request('easel_set_page', {track, page}),
-    currentTrack: () => state ? state[0] : 0,
-    select:  (track) => request('select', {track, source: 6}),
+    note:    (note, vel) => { if (preview) preview.c.sim_easel_note(note, vel); },
+    setParam: (param, val) => { if (preview) preview.c.sim_easel_param(param, val); },
   };
 
   availability();boot();
