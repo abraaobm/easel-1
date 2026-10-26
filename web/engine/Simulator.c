@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
-/* Browser platform adapter: in-memory display, storage and MIDI input. */
+/* Browser platform adapter with Easel-1 hybrid engine. */
 #include "fm_patch.h"
 #include "internal.h"
 #include "sampledrum.h"
@@ -31,10 +31,16 @@ static float output[FM1_BLOCK_WORDS];
 static int16_t *sample_input;
 static uint8_t *sample_encoded;
 static unsigned sample_frames, sample_bytes;
+
 extern void groove_screen_snapshot(uint8_t state[8]);
 extern int groove_screen_open(unsigned target);
 extern int groove_screen_preset(unsigned slot);
 extern unsigned groove_screen_preset_position(void);
+
+/* Easel-1 DSP */
+extern void easel_mix(int32_t *out, unsigned frames);
+extern void easel_note_on(uint8_t note, uint8_t vel);
+extern void easel_set_param(int param, float val);
 
 void fm1_web_pause(void) { ++gate; }
 void fm1_web_resume(void) { if (gate) --gate; }
@@ -59,7 +65,6 @@ void fm1_controls_read(struct fm1_controls *value)
     memset(controls.encoders, 0, sizeof controls.encoders);
 }
 void fm1_led_set(unsigned key, int on) { if (key < sizeof leds) leds[key] = on != 0; }
-/* Track 16-row bands until the browser consumes the next display update. */
 static void screen_changed(unsigned y, unsigned h)
 {
     if (!h) return;
@@ -75,8 +80,7 @@ void fm1_screen_fill(unsigned x, unsigned y, unsigned w, unsigned h, uint16_t co
         for (unsigned c = 0; c < w; ++c) pixels[(y + r) * 240 + x + c] = color;
     if (w) screen_changed(y, h);
 }
-int fm1_screen_blit(unsigned x, unsigned y, unsigned w, unsigned h,
-                    const uint16_t *source, size_t count)
+int fm1_screen_blit(unsigned x, unsigned y, unsigned w, unsigned h, const uint16_t *source, size_t count)
 {
     if (!source || x > 240 || y > 240 || w > 240 - x || h > 240 - y || count < w * h) return -1;
     for (unsigned r = 0; r < h; ++r)
@@ -84,10 +88,8 @@ int fm1_screen_blit(unsigned x, unsigned y, unsigned w, unsigned h,
     if (w) screen_changed(y, h);
     return 0;
 }
-/* Browser pixel copies complete immediately. */
 int fm1_screen_pending(void) { return 0; }
-int fm1_screen_submit(unsigned x, unsigned y, unsigned w, unsigned h,
-                      uint16_t *source, size_t count)
+int fm1_screen_submit(unsigned x, unsigned y, unsigned w, unsigned h, uint16_t *source, size_t count)
 {
     if (!w || !h || w > 240U || h > 240U || w * h > FM1_SCREEN_DMA_PIXELS) return -1;
     int result = fm1_screen_blit(x, y, w, h, source, count);
@@ -96,7 +98,6 @@ int fm1_screen_submit(unsigned x, unsigned y, unsigned w, unsigned h,
             source[i] = (uint16_t)((source[i] << 8) | (source[i] >> 8));
     return result;
 }
-/* Settings work in the preview; discovery and links require the real radio. */
 int fm1_bluetooth_configure(unsigned features)
 {
     if (features & ~(FM1_BT_AUDIO | FM1_BT_MIDI)) return -1;
@@ -150,7 +151,6 @@ const uint8_t *fm1_flash_map(uint32_t at, size_t bytes)
 { return at <= sizeof flash && bytes <= sizeof flash - at ? flash + at : NULL; }
 int fm1_flash_invalidate(uint32_t at, size_t bytes)
 { return at <= sizeof flash && bytes <= sizeof flash - at ? 0 : FM1_FLASH_INVALID; }
-/* Optional test capture; the ordinary offline workbench has no live outputs. */
 static struct { uint8_t port, bytes, data[128]; } midi_capture[64];
 static unsigned capture_read, capture_write, capture_on, midi_ready = 6, midi_busy;
 static unsigned midi_source = FM1_MIDI_USB;
@@ -180,7 +180,6 @@ EXPORT("sim_midi_capture") void sim_midi_capture(unsigned enable)
 { capture_on = enable != 0; capture_read = capture_write = 0; }
 EXPORT("sim_midi_ports") void sim_midi_ports(unsigned ready, unsigned busy)
 { midi_ready = ready & 6; midi_busy = busy & 6; }
-/* Encoded result: port in bits 8..9, byte count in bits 0..7; data in sim_file. */
 EXPORT("sim_midi_output") unsigned sim_midi_output(void)
 {
     if (capture_read == capture_write) return 0;
@@ -193,6 +192,7 @@ EXPORT("sim_midi_setting") unsigned sim_midi_setting(unsigned track, unsigned pa
 EXPORT("sim_midi_edit") void sim_midi_edit(unsigned track, unsigned parameter, int delta)
 { groove_settings_midi(track, parameter, delta); }
 
+/* Interceptação das notas MIDI para o motor Easel-1 */
 int fm1_midi_post(const uint8_t *data, size_t bytes)
 {
     if (!data || !bytes || bytes > 3 || data[0] < 128) return -1;
@@ -200,10 +200,14 @@ int fm1_midi_post(const uint8_t *data, size_t bytes)
     if (status < 0xf0) count = (status & 0xe0) == 0xc0 ? 2 : 3;
     else if (status == 0xf1 || status == 0xf3) count = 2;
     else if (status == 0xf2) count = 3;
-    else if (status == 0xf6 || status == 0xf8 || status == 0xfa || status == 0xfb ||
-             status == 0xfc || status == 0xfe || status == 0xff) count = 1;
+    else if (status == 0xf6 || status == 0xf8 || status == 0xfa || status == 0xfb || status == 0xfc || status == 0xfe || status == 0xff) count = 1;
     if (bytes != count) return -1;
     for (size_t i = 1; i < bytes; ++i) if (data[i] >= 128) return -1;
+    
+    // Envia notas diretas para o Easel-1
+    if ((status & 0xf0) == 0x90) easel_note_on(data[1], data[2]);
+    else if ((status & 0xf0) == 0x80) easel_note_on(data[1], 0);
+
     unsigned next = (midi_write + 1) % MIDI_QUEUE;
     if (next == midi_read) { midi_read = midi_write; midi_reset = 1; return -1; }
     memcpy(midi[midi_write].data, data, bytes); midi[midi_write].count = (uint8_t)bytes;
@@ -213,7 +217,6 @@ static void send(const uint8_t *data, unsigned bytes)
 { fm1_web_midi(data, bytes); }
 EXPORT("sim_boot") void sim_boot(unsigned clear)
 {
-    /* Bit 0 clears storage; bit 1 previews the device startup animation. */
     if (clear & 1U) {
         memset(flash, 255, sizeof flash);
         unsigned bytes;
@@ -253,8 +256,6 @@ EXPORT("sim_release") void sim_release(void)
 }
 EXPORT("sim_clear") void sim_clear(void)
 {
-    /* Clear project slots and their staging sector, not the sample bank.
-     * Keep the monitor setting when restarting the browser instruments. */
     unsigned level = controls.knob;
     memset(flash, 255, GROOVE_SAMPLE_OFFSET); ++flash_revision;
     sim_boot(0);
@@ -279,7 +280,6 @@ EXPORT("sim_open") int sim_open(unsigned target)
 }
 EXPORT("sim_preset") int sim_preset(unsigned slot)
 {
-    /* The panel loader retires Normal keys and retains live Play pitches. */
     int result = groove_screen_preset(slot);
     fm1_web_control();
     return result;
@@ -326,7 +326,6 @@ EXPORT("sim_select") int sim_select(unsigned track, unsigned source)
 {
     if (track >= GROOVE_TRACKS || source > GROOVE_SOURCES) return -1;
     uint8_t view[8]; groove_screen_snapshot(view);
-    /* Keep FX visible when selecting another track from the web selector. */
     if (source == GROOVE_SOURCES && view[1] == 10U) {
         sim_release(); sim_control(2, 0, (int)track - view[0]); return 0;
     }
@@ -341,7 +340,6 @@ EXPORT("sim_select") int sim_select(unsigned track, unsigned source)
     return 0;
 }
 EXPORT("sim_block_frames") unsigned sim_block_frames(void) { return FM1_BLOCK_FRAMES; }
-/* Read-only acceptance state; note 255 means the arpeggiator gate is closed. */
 extern unsigned groove_arp_test_note(unsigned track);
 EXPORT("sim_arp") unsigned sim_arp(unsigned track)
 {
@@ -350,16 +348,20 @@ EXPORT("sim_arp") unsigned sim_arp(unsigned track)
            (groove_arp_setting(track, 2) << 13) | (groove_arp_setting(track, 3) << 15) |
            (groove_arp_setting(track, 4) << 17) | (groove_arp_setting(track, 5) << 23);
 }
+
+/* NOVO: O simulador chama o motor Easel-1 em vez da DX7 */
 EXPORT("sim_render") const float *sim_render(void)
 {
-    /* Preserve one block of output latency. */
     for (unsigned i = 0; i < FM1_BLOCK_WORDS; ++i) output[i] = (float)previous[i] * (1.0f / 8388608.0f);
     if (midi_reset) { const uint8_t reset = 255; send(&reset, 1); midi_reset = 0; }
     while (midi_read != midi_write) {
         send(midi[midi_read].data, midi[midi_read].count); midi_read = (midi_read + 1) % MIDI_QUEUE;
     }
-    (void)fm1_engine_render(previous, FM1_BLOCK_FRAMES);
+    
+    // Substitui fm1_engine_render pelo Easel-1
+    easel_mix(previous, FM1_BLOCK_FRAMES);
     fm1_output_mix(previous);
+    
     frames += FM1_BLOCK_FRAMES; uint32_t next = (uint32_t)(frames * 1000U / 44100U);
     unsigned poll = now_ms / 10U != next / 10U; now_ms = next;
     if (poll) { fm1_web_tick(); fm1_web_control(); }
@@ -409,7 +411,6 @@ EXPORT("sim_sample_encode") const uint8_t *sim_sample_encode(void)
 EXPORT("sim_sample_bytes") unsigned sim_sample_bytes(void) { return sample_bytes; }
 EXPORT("sim_sample_bank") int sim_sample_bank(unsigned bytes)
 {
-    /* Browser worker writes only the sample portion of its private Flash array. */
     if (bytes < 512 || bytes > GROOVE_SAMPLE_BYTES) return -1;
     ++flash_revision;
     groove_fm_library_init();
@@ -461,7 +462,10 @@ EXPORT("sim_midi_from") int sim_midi_from(unsigned source, unsigned bytes)
 }
 EXPORT("sim_midi") int sim_midi(unsigned bytes) { return sim_midi_from(FM1_MIDI_USB, bytes); }
 
-/* The browser has no hardware streams; the same APP mixer still runs. */
+/* Exportações do Easel-1 para o JS */
+EXPORT("sim_easel_note") void web_easel_note(uint8_t note, uint8_t vel) { easel_note_on(note, vel); }
+EXPORT("sim_easel_param") void web_easel_param(int param, float val) { easel_set_param(param, val); }
+
 int fm1_usb_audio_read(int32_t *pcm, unsigned frames, uint16_t gains[2])
 {
     if (!pcm || !gains || frames != FM1_BLOCK_FRAMES) return -1;
