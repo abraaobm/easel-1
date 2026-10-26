@@ -27,7 +27,29 @@ static unsigned gate, midi_read, midi_write, midi_reset;
 static uint8_t radio_features, radio_role;
 static struct { uint8_t data[3], count; } midi[MIDI_QUEUE];
 static int32_t previous[FM1_BLOCK_WORDS];
-static int32_t scratch_audio[FM1_BLOCK_WORDS]; // Buffer para o sequenciador do FM1
+static int32_t scratch_audio[FM1_BLOCK_WORDS];
+
+EXPORT("sim_render") const float *sim_render(void)
+{
+    if (midi_reset) { const uint8_t reset = 255; send(&reset, 1); midi_reset = 0; }
+    while (midi_read != midi_write) {
+        send(midi[midi_read].data, midi[midi_read].count); midi_read = (midi_read + 1) % MIDI_QUEUE;
+    }
+    
+    // 1. Roda a engine nativa em background. O relógio bate e o groove_midi_note é chamado.
+    (void)fm1_engine_render(scratch_audio, FM1_BLOCK_FRAMES);
+    
+    // 2. Gera o áudio do Easel-1 (que recebeu as notas do passo 1)
+    easel_mix(previous, FM1_BLOCK_FRAMES);
+    
+    for (unsigned i = 0; i < FM1_BLOCK_WORDS; ++i)
+        output[i] = (float)previous[i] * (1.0f / 8388608.0f);
+    
+    frames += FM1_BLOCK_FRAMES; uint32_t next = (uint32_t)(frames * 1000U / 44100U);
+    unsigned poll = now_ms / 10U != next / 10U; now_ms = next;
+    if (poll) { fm1_web_tick(); fm1_web_control(); }
+    return output;
+}
 static float output[FM1_BLOCK_WORDS];
 static int16_t *sample_input;
 static uint8_t *sample_encoded;
