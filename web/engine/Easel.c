@@ -86,13 +86,14 @@ void easel_mix(int32_t *out, unsigned frames) {
             if (voices[v].phase >= 1.0f) voices[v].phase -= 1.0f;
             float raw = osc_morph(voices[v].phase, p_shape);
             
-            // Wavefolder corrigido (Buchla 259 style)
+            // Wavefolder
             float fold_depth = 1.0f + p_fold * 6.0f;
             float u = raw * fold_depth;
             while (u > 1.0f) u = 2.0f - u;
             while (u < -1.0f) u = -2.0f - u;
             float folded = u;
             
+            // Low Pass Gate
             float base_cutoff = 100.0f + p_lpg * 10000.0f;
             float cutoff = base_cutoff * (0.05f + 0.95f * voices[v].env);
             if (cutoff > 18000.0f) cutoff = 18000.0f;
@@ -102,14 +103,20 @@ void easel_mix(int32_t *out, unsigned frames) {
             
             float lpg_out = voices[v].lpg_low * voices[v].env;
             
-            // Envelope mais longo para o LPG "segurar" o timbre
+            // Envelope
             float decay_time = 0.1f + p_decay * 2.0f;
             float decay_rate = expf(-1.0f / (decay_time * 44100.0f));
             voices[v].env *= decay_rate; 
             if (voices[v].env < 0.0001f) voices[v].active = 0;
             
-            mixed += (lpg_out * voices[v].velocity) * 4.0f;
+            // Soma as vozes com uma margem de segurança (0.4)
+            mixed += lpg_out * voices[v].velocity * 0.4f;
         }
+        
+        // Soft Clipping (Saturação Analógica) para evitar o estouro de sinal
+        // Se tocar 4 notas, o som "cola" em vez de estalar digitalmente.
+        mixed = tanhf(mixed);
+        
         out[i * 2] += (int32_t)(mixed * 8388608.0f);
         out[i * 2 + 1] += (int32_t)(mixed * 8388608.0f);
     }
