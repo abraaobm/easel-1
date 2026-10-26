@@ -224,11 +224,22 @@
     const api = await waitForApi();
     wc.api = api;
     wc.track = await api.currentTrack();
+    
+    // Força a inicialização do áudio no celular
+    const startBtn = document.getElementById('sim-start');
+    if (startBtn && startBtn.getAttribute('aria-pressed') === 'false') {
+      // Se o áudio não estiver ligado, simula um clique no botão de mute (que liga o som)
+      startBtn.click();
+    }
+
     try { await api.enter(wc.track); }
     catch (e) {
+      console.error("WC enter error:", e);
       alert('West Coast needs a DX7 track.\nSelect a DX7 track first, then try again.');
       return;
     }
+    console.log("WC entered track", wc.track);
+    
     const panel = buildPanel();
     if (!panel) return;
     try { wc.page = await api.page(wc.track); } catch (_) { wc.page = 0; }
