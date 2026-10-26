@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
-/* Easel-1 Core DSP Engine - Com Function Generator */
+/* Easel-1 Core DSP Engine - Com Retrigger */
 #include <math.h>
 #include <string.h>
 #include <stdint.h>
@@ -32,7 +32,7 @@ static float p_lpg = 0.5f;    // 0..1 (LPG Base Cutoff)
 static float p_rise = 0.1f;   // 0..1 (Tempo de subida)
 static float p_fall = 0.3f;   // 0..1 (Tempo de descida)
 static float p_loop = 0.0f;   // 0 ou 1 (LFO mode)
-static float p_route = 0.0f;  // 0 = Fold, 1 = Pitch (agora é um Crossfade)
+static float p_route = 0.0f;  // 0 = Fold, 1 = Pitch (Crossfade)
 
 // Estado do Function Generator (Global)
 static float fg_phase = 0.0f;
@@ -58,9 +58,23 @@ static float osc_morph(float phase, float shape) {
 }
 
 void easel_note_on(uint8_t note, uint8_t vel) {
-    // FIX: Note Off é ignorado. O LPG (Vactrol) decai no seu próprio tempo.
+    // Ignora Note Off (O Vactrol decai sozinho)
     if (!vel) return;
 
+    // 1. Se a nota já está tocando, faz retrigger nela (não consome nova voz)
+    for (int i = 0; i < 8; i++) {
+        if (voices[i].active && voices[i].note == note) {
+            voices[i].env = 1.0f;       // Reinicia o Vactrol
+            voices[i].phase = 0.0f;     // Reinicia a onda
+            voices[i].velocity = vel / 127.0f;
+            
+            fg_phase = 0.0f;            // Reinicia o Function Generator
+            fg_running = 1;
+            return;
+        }
+    }
+
+    // 2. Se não está tocando, procura uma voz livre
     for (int i = 0; i < 8; i++) {
         if (!voices[i].active) {
             voices[i].active = 1;
@@ -71,13 +85,33 @@ void easel_note_on(uint8_t note, uint8_t vel) {
             voices[i].velocity = vel / 127.0f;
             voices[i].lpg_low = 0.0f;
             
-            // Dispara o Function Generator
             fg_phase = 0.0f;
             fg_out = 0.0f;
             fg_running = 1;
-            break;
+            return;
         }
     }
+
+    // 3. Se todas as 8 vozes estão ocupadas, rouba a que tem o som mais baixo
+    int steal = 0;
+    float min_env = voices[0].env;
+    for (int i = 1; i < 8; i++) {
+        if (voices[i].env < min_env) {
+            min_env = voices[i].env;
+            steal = i;
+        }
+    }
+    voices[steal].active = 1;
+    voices[steal].note = note;
+    voices[steal].freq = 440.0f * powf(2.0f, (note - 69) / 12.0f);
+    voices[steal].phase = 0.0f;
+    voices[steal].env = 1.0f;
+    voices[steal].velocity = vel / 127.0f;
+    voices[steal].lpg_low = 0.0f;
+    
+    fg_phase = 0.0f;
+    fg_out = 0.0f;
+    fg_running = 1;
 }
 
 void easel_set_param(int param, float val) {
@@ -97,7 +131,6 @@ void easel_mix(int32_t *out, unsigned frames) {
     memset(out, 0, frames * 2 * sizeof(int32_t));
 
     for (unsigned i = 0; i < frames; i++) {
-        // --- Processa o Function Generator ---
         if (fg_running) {
             float rise_time = 0.01f + p_rise * 2.0f;
             float fall_time = 0.01f + p_fall * 2.0f;
@@ -105,16 +138,16 @@ void easel_mix(int32_t *out, unsigned frames) {
             fg_phase += rate;
             
             if (fg_phase < 1.0f) {
-                fg_out = fg_phase; // Rise
+                fg_out = fg_phase;
             } else if (fg_phase < 2.0f) {
-                fg_out = 2.0f - fg_phase; // Fall
+                fg_out = 2.0f - fg_phase;
             } else {
                 if (p_loop > 0.5f) {
-                    fg_phase -= 2.0f; // Reinicia no modo Loop
+                    fg_phase -= 2.0f;
                 } else {
                     fg_phase = 2.0f;
                     fg_out = 0.0f;
-                    fg_running = 0; // Para no modo One-Shot
+                    fg_running = 0;
                 }
             }
         }
@@ -123,8 +156,6 @@ void easel_mix(int32_t *out, unsigned frames) {
         for (int v = 0; v < 8; v++) {
             if (!voices[v].active) continue;
             
-            // FIX: Crossfade contínuo entre Fold e Pitch.
-            // Route = 0.0: Apenas Fold | Route = 0.5: Metade de cada | Route = 1.0: Apenas Pitch
             float fold_mod = 1.0f + (fg_out * 3.0f * (1.0f - p_route)); 
             float pitch_mod = powf(2.0f, (fg_out * 1.5f * p_route));
             
@@ -132,14 +163,12 @@ void easel_mix(int32_t *out, unsigned frames) {
             if (voices[v].phase >= 1.0f) voices[v].phase -= 1.0f;
             float raw = osc_morph(voices[v].phase, p_shape);
             
-            // Wavefolder
             float fold_depth = (1.0f + p_fold * 6.0f) * fold_mod;
             float u = raw * fold_depth;
             while (u > 1.0f) u = 2.0f - u;
             while (u < -1.0f) u = -2.0f - u;
             float folded = u;
             
-            // Low Pass Gate
             float base_cutoff = 100.0f + p_lpg * 10000.0f;
             float cutoff = base_cutoff * (0.05f + 0.95f * voices[v].env);
             if (cutoff > 18000.0f) cutoff = 18000.0f;
@@ -149,7 +178,6 @@ void easel_mix(int32_t *out, unsigned frames) {
             
             float lpg_out = voices[v].lpg_low * voices[v].env;
             
-            // Decaimento do Vactrol
             float decay_time = 0.1f + p_decay * 2.0f;
             float decay_rate = expf(-1.0f / (decay_time * 44100.0f));
             voices[v].env *= decay_rate; 
