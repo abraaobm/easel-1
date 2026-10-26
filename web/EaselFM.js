@@ -8,7 +8,8 @@
 
   const PAGES = [
     { name: 'VOICE', labels: ['SHAPE', 'FOLD', 'DECAY', 'LPG CUTOFF'], defaults: [0, 20, 50, 50] },
-    { name: 'MOTION', labels: ['RISE', 'FALL', 'LOOP', 'ROUTE'], defaults: [10, 30, 0, 0] }
+    { name: 'MOTION', labels: ['RISE', 'FALL', 'LOOP', 'ROUTE'], defaults: [10, 30, 0, 0] },
+    { name: 'MOD/RAND', labels: ['RATE', 'AMOUNT', 'TARGET', 'SMOOTH'], defaults: [50, 0, 0, 0] }
   ];
 
   function waitForApi() {
@@ -113,6 +114,12 @@
     panel.querySelectorAll('.easel-knob').forEach(el => {
       const i = Number(el.dataset.easelKnob);
       el.querySelector('label').textContent = PAGES[page].labels[i];
+      // Carrega o valor visual da página correspondente (mockup)
+      el.querySelector('.easel-val').textContent = PAGES[page].defaults[i];
+      el.querySelector('.easel-valbar > i').style.width = PAGES[page].defaults[i] + '%';
+      
+      // Reinicializa o parâmetro no motor para a página selecionada
+      if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(page * 4 + i, PAGES[page].defaults[i] / 100);
     });
   }
 
@@ -133,7 +140,6 @@
         const current = parseFloat(el.querySelector('.easel-val').textContent) / 100;
         const next = Math.max(0, Math.min(1, current + (d * 0.01)));
         
-        // Envia o parâmetro correto baseado na página (Voice = 0-3, Motion = 4-7)
         if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(wc.page * 4 + knob, next);
         
         el.querySelector('.easel-val').textContent = Math.round(next * 100);
@@ -177,7 +183,7 @@
       });
       
       // Inicializa o motor com os valores default
-      for (let p = 0; p < 2; p++) {
+      for (let p = 0; p < 3; p++) {
         for (let k = 0; k < 4; k++) {
           globalThis.FM1Easel.setParam(p * 4 + k, PAGES[p].defaults[k] / 100);
         }
