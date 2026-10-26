@@ -44,6 +44,7 @@
       .easel-footer button:hover{background:#558b2f;color:#fff}
       .easel-footer button.test { background:#8bc34a; color:#1a1c18; border-color:#dcedc8;}
       .easel-footer button.test:hover { background:#aed581; }
+      .easel-state { margin-top:8px; font-size:9px; color:#607d8b; text-align:center; font-family:monospace; }
     `;
     document.head.appendChild(style);
   }
@@ -84,6 +85,7 @@
         <button id="easel-test" class="test">TEST NOTE</button>
         <button id="easel-exit">Exit</button>
       </div>
+      <div id="easel-state" class="easel-state">ENGINE READY</div>
     `;
     device.appendChild(panel);
     return panel;
@@ -130,6 +132,11 @@
         const next = Math.max(0, Math.min(1, current + (d * 0.01)));
         if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(knob, next);
         render(knob, next);
+        
+        // Atualiza o debug state
+        const stateTxt = `FOLD: ${Math.round(parseFloat(panel.querySelector('[data-easel-knob="1"] .easel-val').textContent))}% | LPG: ${Math.round(parseFloat(panel.querySelector('[data-easel-knob="3"] .easel-val').textContent))}%`;
+        const stateEl = document.getElementById('easel-state');
+        if (stateEl) stateEl.textContent = stateTxt;
       }
     });
     const up = e => {
@@ -156,20 +163,20 @@
       panel.dataset.wired = '1';
       $('easel-close').onclick = $('easel-exit').onclick = () => { panel.hidden = true; };
       $('easel-test').onclick = () => {
-          // Toca um Dó central (60) com velocidade máxima
           if (globalThis.FM1Easel) globalThis.FM1Easel.note(60, 127);
-          // Solta a nota após 2 segundos
           setTimeout(() => { if (globalThis.FM1Easel) globalThis.FM1Easel.note(60, 0); }, 2000);
       };
       panel.querySelectorAll('.easel-knob').forEach(el => {
         wireKnob(el, Number(el.dataset.easelKnob));
       });
       
-      // Envia os valores iniciais para o motor C
       globalThis.FM1Easel.setParam(0, 0.0);
       globalThis.FM1Easel.setParam(1, 0.2);
       globalThis.FM1Easel.setParam(2, 0.5);
       globalThis.FM1Easel.setParam(3, 0.5);
+      
+      const stateEl = document.getElementById('easel-state');
+      if (stateEl) stateEl.textContent = 'FOLD: 20% | LPG: 50%';
     }
   }
 
