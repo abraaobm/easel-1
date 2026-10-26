@@ -40,8 +40,10 @@
       .easel-knob.drag{background:#37474f;border-color:#8bc34a}
       .easel-footer{display:flex;gap:6px;margin-top:12px}
       .easel-footer button{flex:1;padding:8px;background:#2e3b25;color:#aed581;
-        border:1px solid #33691e;border-radius:4px;cursor:pointer;font-size:10px}
+        border:1px solid #33691e;border-radius:4px;cursor:pointer;font-size:10px;font-weight:bold;}
       .easel-footer button:hover{background:#558b2f;color:#fff}
+      .easel-footer button.test { background:#8bc34a; color:#1a1c18; border-color:#dcedc8;}
+      .easel-footer button.test:hover { background:#aed581; }
     `;
     document.head.appendChild(style);
   }
@@ -79,6 +81,7 @@
         </div>
       </div>
       <div class="easel-footer">
+        <button id="easel-test" class="test">TEST NOTE</button>
         <button id="easel-exit">Exit</button>
       </div>
     `;
@@ -123,10 +126,9 @@
       const d = Math.trunc((lastY - e.clientY) / 4);
       if (d) {
         moved = true; lastY -= d * 4;
-        // Envia direto para o motor C (WASM)
         const current = parseFloat(el.querySelector('.easel-val').textContent) / 100;
         const next = Math.max(0, Math.min(1, current + (d * 0.01)));
-        globalThis.FM1Easel.setParam(knob, next);
+        if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(knob, next);
         render(knob, next);
       }
     });
@@ -142,7 +144,6 @@
     const api = await waitForApi();
     wc.api = api;
     
-    // Força o áudio ligado
     const startBtn = document.getElementById('sim-start');
     if (startBtn && startBtn.getAttribute('aria-pressed') === 'false') startBtn.click();
 
@@ -154,9 +155,21 @@
     if (!panel.dataset.wired) {
       panel.dataset.wired = '1';
       $('easel-close').onclick = $('easel-exit').onclick = () => { panel.hidden = true; };
+      $('easel-test').onclick = () => {
+          // Toca um Dó central (60) com velocidade máxima
+          if (globalThis.FM1Easel) globalThis.FM1Easel.note(60, 127);
+          // Solta a nota após 2 segundos
+          setTimeout(() => { if (globalThis.FM1Easel) globalThis.FM1Easel.note(60, 0); }, 2000);
+      };
       panel.querySelectorAll('.easel-knob').forEach(el => {
         wireKnob(el, Number(el.dataset.easelKnob));
       });
+      
+      // Envia os valores iniciais para o motor C
+      globalThis.FM1Easel.setParam(0, 0.0);
+      globalThis.FM1Easel.setParam(1, 0.2);
+      globalThis.FM1Easel.setParam(2, 0.5);
+      globalThis.FM1Easel.setParam(3, 0.5);
     }
   }
 
