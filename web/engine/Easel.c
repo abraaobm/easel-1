@@ -21,10 +21,10 @@ typedef struct {
 } easel_voice_t;
 
 static easel_voice_t voices[8];
-static float p_shape = 0.0f;  // 0..1 (Sine -> Tri -> Saw -> Square)
-static float p_fold = 0.2f;   // 0..1 (Wavefolder depth)
-static float p_decay = 0.5f;  // 0..1 (LPG Decay)
-static float p_lpg = 0.5f;    // 0..1 (LPG Base Cutoff)
+static float p_shape = 0.0f;  // 0..1
+static float p_fold = 0.2f;   // 0..1
+static float p_decay = 0.5f;  // 0..1
+static float p_lpg = 0.5f;    // 0..1
 
 static float osc_morph(float phase, float shape) {
     float sine = sinf(phase * 6.2831853f);
@@ -57,7 +57,7 @@ void easel_note_on(uint8_t note, uint8_t vel) {
             voices[i].note = note;
             voices[i].freq = 440.0f * powf(2.0f, (note - 69) / 12.0f);
             voices[i].phase = 0.0f;
-            voices[i].env = 1.0f; // Trigger LPG
+            voices[i].env = 1.0f;
             voices[i].velocity = vel / 127.0f;
             voices[i].lpg_low = 0.0f;
             break;
@@ -75,7 +75,6 @@ void easel_set_param(int param, float val) {
 void easel_mix(int32_t *out, unsigned frames) {
     static float sample_rate = 44100.0f;
     
-    // Limpa o buffer para o Easel-1 ser a única fonte de som
     memset(out, 0, frames * 2 * sizeof(int32_t));
 
     for (unsigned i = 0; i < frames; i++) {
@@ -83,12 +82,10 @@ void easel_mix(int32_t *out, unsigned frames) {
         for (int v = 0; v < 8; v++) {
             if (!voices[v].active) continue;
             
-            // 1. Complex Oscillator
             voices[v].phase += voices[v].freq / sample_rate;
             if (voices[v].phase >= 1.0f) voices[v].phase -= 1.0f;
             float raw = osc_morph(voices[v].phase, p_shape);
             
-            // 2. Wavefolder (Buchla 259 style)
             float fold_depth = 1.0f + p_fold * 6.0f;
             float u = raw * fold_depth;
             u = fmodf(u + 1.0f, 2.0f);
@@ -96,25 +93,24 @@ void easel_mix(int32_t *out, unsigned frames) {
             if (u > 1.0f) u = 2.0f - u;
             float folded = u - 1.0f;
             
-            // 3. Low Pass Gate (Vactrol emulation)
             float base_cutoff = 100.0f + p_lpg * 10000.0f;
-            float cutoff = base_cutoff * (0.05f + 0.95f * voices[v].env); // Filtro acoplado
+            float cutoff = base_cutoff * (0.05f + 0.95f * voices[v].env);
             if (cutoff > 18000.0f) cutoff = 18000.0f;
             
             float alpha = 1.0f - expf(-2.0f * 3.14159f * cutoff / sample_rate);
             voices[v].lpg_low += alpha * (folded - voices[v].lpg_low);
             
-            // VCA acoplado
             float lpg_out = voices[v].lpg_low * voices[v].env;
             
-            // 4. Envelope de disparo único (LPG Ping)
-            float decay_rate = 1.0f - p_decay * 0.9995f;
+            // FIX: Tempo de decaimento real (0.1s até 2.1s)
+            float decay_time = 0.1f + p_decay * 2.0f;
+            float decay_rate = expf(-1.0f / (decay_time * 44100.0f));
             voices[v].env *= decay_rate; 
             if (voices[v].env < 0.0001f) voices[v].active = 0;
             
-            mixed += lpg_out * voices[v].velocity;
+            // FIX: Boost no volume para compensar a perda do mixer original
+            mixed += (lpg_out * voices[v].velocity) * 4.0f;
         }
-        // Envia para o buffer (Q23 para Q31)
         out[i * 2] += (int32_t)(mixed * 8388608.0f);
         out[i * 2 + 1] += (int32_t)(mixed * 8388608.0f);
     }
