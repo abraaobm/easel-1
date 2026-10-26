@@ -1,232 +1,243 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
-/* Easel FM - Hybrid West Coast engine for web preview.
- * Uses Track Pairing: Even track = DX7 (Complex Osc), Odd track = Pluck (LPG). */
-#include "instrument.h"
-#include <string.h>
+(() => {
+  'use strict';
+  if (typeof document === 'undefined') return;
+  const $ = id => document.getElementById(id);
 
-#ifdef __wasm__
-#define EXPORT(name) __attribute__((export_name(name)))
-#else
-#define EXPORT(name)
-#endif
+  const PAGES = [
+    { name: 'VOICE',    knobs: ['FOLD', 'RATIO', 'FINE', 'WAVE'] },
+    { name: 'MOTION',   knobs: ['RISE', 'FALL', 'LOOP', 'DEPTH'] },
+    { name: 'GATE',     knobs: ['LEVEL', 'SOFT', 'RAND P', 'RAND T'] },
+    { name: 'SEQUENCE', knobs: ['TEMPO', 'SWING', 'LENGTH', 'TRANSP'] },
+  ];
 
-/* Easel INIT patch for the FM track (Algorithm 5: OP6 -> OP5) */
-static const uint8_t easel_fm_patch[156] = {
-    /* OP6 (modulador) */
-    99, 60,  0, 60,  99, 60, 60,  0,  50, 0, 0,  0, 0, 1, 0, 0,   0, 0,  2, 0, 7,
-    /* OP5 (portadora) */
-    20, 60,  0, 60,  99, 80, 60,  0,  50, 0, 0,  0, 0, 1, 0, 2,  80, 0,  1, 0, 7,
-    /* OP4 mudo */
-    99, 99, 99, 99,  99,  0,  0,  0,  50, 0, 0,  0, 0, 1, 0, 0,   0, 0,  1, 0, 7,
-    /* OP3 mudo */
-    99, 99, 99, 99,  99,  0,  0,  0,  50, 0, 0,  0, 0, 1, 0, 0,   0, 0,  1, 0, 7,
-    /* OP2 mudo */
-    99, 99, 99, 99,  99,  0,  0,  0,  50, 0, 0,  0, 0, 1, 0, 0,   0, 0,  1, 0, 7,
-    /* OP1 mudo */
-    99, 99, 99, 99,  99,  0,  0,  0,  50, 0, 0,  0, 0, 1, 0, 0,   0, 0,  1, 0, 7,
-    /* Pitch EG rates + levels */
-    99, 99, 99, 99,  50, 50, 50, 50,
-    /* ALG FDBK SYNC LFO-SPD LFO-DLY PMD AMD LFO-SYNC LFO-WAVE PMSENS TRANS */
-     4,  1,  1, 35,  0,  0,  0,  1,  4,  0, 24,
-    /* Nome */
-    'E','A','S','E','L',' ','I','N','I','T',
-    63,
-};
+  const wc = { track: 0, page: 0, values: new Uint8Array(4), visible: false, api: null };
 
-typedef struct { uint8_t enabled, page, init_done; } easel_state_t;
-static easel_state_t state[GROOVE_TRACKS / 2];
-static uint8_t read_buf[4] __attribute__((used));
+  function waitForApi() {
+    return new Promise(resolve => {
+      const check = () => globalThis.FM1Easel ? resolve(globalThis.FM1Easel) : setTimeout(check, 120);
+      check();
+    });
+  }
 
-static void ensure_init(void) {
-    static uint8_t initialized;
-    if (initialized) return;
-    memset(state, 0, sizeof state);
-    initialized = 1;
-}
+  function injectStyles() {
+    if ($('sim-easel-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'sim-easel-styles';
+    style.textContent = `
+      .easel-panel{position:absolute;right:1.5%;top:2.5%;width:42%;max-width:340px;
+        background:#1a1c18f2;backdrop-filter:blur(8px);
+        border:2px solid #8bc34a;border-radius:8px;padding:12px;z-index:30;
+        color:#dcedc8;font:12px/1.4 system-ui,sans-serif;box-shadow:0 10px 40px #000c}
+      .easel-panel[hidden]{display:none}
+      .easel-header{display:flex;align-items:center;gap:8px;
+        border-bottom:1px solid #33691e;padding-bottom:6px;margin-bottom:10px}
+      .easel-header strong{color:#8bc34a;letter-spacing:.1em;font-size:12px;text-shadow:0 0 5px #8bc34a50}
+      .easel-header span{color:#aed581;font-size:10px}
+      .easel-header #easel-close{background:none;border:none;color:#aed581;
+        font-size:18px;cursor:pointer;padding:0 4px;line-height:1;margin-left:auto}
+      .easel-header #easel-close:hover{color:#ff8a65}
+      .easel-page-nav{display:flex;gap:4px;margin-bottom:10px}
+      .easel-page-nav button{flex:1;padding:6px;background:#2e3b25;color:#aed581;
+        border:1px solid #33691e;border-radius:4px;cursor:pointer;font-size:10px;font-weight:bold}
+      .easel-page-nav button[aria-pressed=true]{background:#558b2f;color:#fff;border-color:#8bc34a}
+      .easel-knobs{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+      .easel-knob{background:#263238;border:1px solid #455a64;border-radius:6px;
+        padding:8px;text-align:center;user-select:none;touch-action:none;cursor:ns-resize;
+        box-shadow:inset 0 0 10px #0006}
+      .easel-knob label{display:block;font-size:9px;color:#90a4ae;margin-bottom:2px;letter-spacing:.05em}
+      .easel-knob .easel-val{font:18px/1.1 Consolas,monospace;color:#8bc34a}
+      .easel-knob .easel-valbar{height:2px;background:#1a1c18;margin-top:6px;border-radius:2px;overflow:hidden}
+      .easel-knob .easel-valbar>i{display:block;height:100%;background:#8bc34a;transition:width .05s}
+      .easel-knob.drag{background:#37474f;border-color:#8bc34a}
+      .easel-footer{display:flex;gap:6px;margin-top:12px}
+      .easel-footer button{flex:1;padding:8px;background:#2e3b25;color:#aed581;
+        border:1px solid #33691e;border-radius:4px;cursor:pointer;font-size:10px}
+      .easel-footer button:hover{background:#558b2f;color:#fff}
+    `;
+    document.head.appendChild(style);
+  }
 
-/* Helper to move a parameter to a target value one step at a time */
-static void tune_track(unsigned track, unsigned page, unsigned param, int target) {
-    if (page == 0) { // FM track
-        uint8_t patch[156];
-        if (groove_fm_copy(track, patch, NULL) == 0) {
-            int current = patch[param];
-            groove_fm_edit(track, param, target - current);
-        }
-    }
-}
+  function buildPanel() {
+    if ($('sim-easel-panel')) return $('sim-easel-panel');
+    const device = $('sim-device');
+    if (!device) return null;
+    injectStyles();
+    const panel = document.createElement('div');
+    panel.id = 'sim-easel-panel';
+    panel.className = 'easel-panel';
+    panel.hidden = true;
+    panel.innerHTML = `
+      <div class="easel-header">
+        <strong>EASEL FM</strong>
+        <span id="easel-track-label">T1+T2</span>
+        <button id="easel-close" aria-label="Close">×</button>
+      </div>
+      <div class="easel-page-nav">
+        ${PAGES.map((p, i) => `<button data-easel-page="${i}" aria-pressed="${i===0}">${p.name}</button>`).join('')}
+      </div>
+      <div class="easel-knobs">
+        ${[0,1,2,3].map(i => `
+          <div class="easel-knob" data-easel-knob="${i}">
+            <label>${PAGES[0].knobs[i]}</label>
+            <div class="easel-val">0</div>
+            <div class="easel-valbar"><i style="width:0"></i></div>
+          </div>`).join('')}
+      </div>
+      <div class="easel-footer">
+        <button id="easel-exit">Exit Easel</button>
+      </div>
+    `;
+    device.appendChild(panel);
+    return panel;
+  }
 
-EXPORT("sim_easel_enter") int sim_easel_enter(unsigned track) {
-    ensure_init();
-    if (track >= GROOVE_TRACKS) return -1;
+  function addEaselButton() {
+    if ($('sim-easel-open')) return $('sim-easel-open');
+    const shortcuts = document.querySelector('#tab-sim .edit-shortcuts');
+    if (!shortcuts) return null;
+    const btn = document.createElement('button');
+    btn.id = 'sim-easel-open';
+    btn.type = 'button';
+    btn.textContent = 'Easel FM';
+    btn.style.background = '#33691e';
+    btn.style.borderColor = '#8bc34a';
+    shortcuts.appendChild(btn);
+    return btn;
+  }
+
+  function render() {
+    const panel = $('sim-easel-panel');
+    if (!panel) return;
+    const baseTrack = wc.track & ~1;
+    $('easel-track-label').textContent = `T${baseTrack + 1}+T${baseTrack + 2}`;
     
-    // Force to even track (0, 2, 4, 6)
-    unsigned base = track & ~1U;
-    unsigned fm = base;
-    unsigned plk = base + 1;
-    unsigned idx = base / 2;
+    panel.querySelectorAll('[data-easel-page]').forEach(b => {
+      b.setAttribute('aria-pressed', String(Number(b.dataset.easelPage) === wc.page));
+    });
 
-    if (groove_source_type(fm) != GROOVE_DX7) groove_source_set(fm, GROOVE_DX7);
-    if (groove_source_type(plk) != GROOVE_PLUCK) groove_source_set(plk, GROOVE_PLUCK);
+    panel.querySelectorAll('.easel-knob').forEach(el => {
+      const i = Number(el.dataset.easelKnob);
+      const raw = wc.values[i];
+      el.querySelector('label').textContent = PAGES[wc.page].knobs[i];
+      el.querySelector('.easel-val').textContent = raw;
+      el.querySelector('.easel-valbar > i').style.width = (raw / 127 * 100) + '%';
+    });
+  }
 
-    // Synchronize MIDI channels so one keypress triggers both
-    unsigned ch = groove_midi_input_channel(fm);
-    groove_midi_input_set(plk, ch);
+  async function refreshValues() {
+    if (!wc.api) return;
+    try {
+      wc.values = await wc.api.read(wc.track);
+      render();
+    } catch (e) { console.warn('[Easel] read failed:', e); }
+  }
 
-    if (!state[idx].init_done) {
-        // Setup FM (Complex Oscillator)
-        groove_fm_import(fm, easel_fm_patch);
-        groove_adsr_enable(fm, 1);
-        tune_track(fm, 0, 0, 20); // Attack
-        tune_track(fm, 0, 1, 50); // Decay
-        tune_track(fm, 0, 2, 80); // Sustain
-        tune_track(fm, 0, 3, 40); // Release
+  let deltaBuf = 0, deltaTimer = 0, lastKnob = 0;
+  async function flushDelta() {
+    const d = deltaBuf; deltaBuf = 0; deltaTimer = 0;
+    if (!wc.api || !d) return;
+    try { await wc.api.adjust(wc.track, lastKnob, d); await refreshValues(); }
+    catch (e) { console.warn('[Easel] adjust failed:', e); }
+  }
+  function queueDelta(knob, delta) {
+    lastKnob = knob;
+    deltaBuf += delta;
+    if (!deltaTimer) deltaTimer = setTimeout(flushDelta, 40);
+  }
 
-        // Setup Pluck (LPG)
-        groove_tone_edit(plk, 0, 0, 90 - 30); // Decay
-        groove_tone_edit(plk, 0, 1, 90 - 50); // Brightness (Filter)
-        
-        state[idx].init_done = 1;
+  function wireKnob(el, knob) {
+    let lastY = 0, moved = false;
+    el.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      lastY = e.clientY; moved = false;
+      el.classList.add('drag');
+      el.setPointerCapture(e.pointerId);
+    });
+    el.addEventListener('pointermove', e => {
+      if (!el.hasPointerCapture(e.pointerId)) return;
+      const d = Math.trunc((lastY - e.clientY) / 4);
+      if (d) { moved = true; lastY -= d * 4; queueDelta(knob, d); }
+    });
+    const up = e => {
+      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      el.classList.remove('drag');
+      if (!moved) queueDelta(knob, 1);
+    };
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    el.addEventListener('wheel', e => {
+      if (!e.deltaY || e.ctrlKey || e.metaKey) return;
+      e.preventDefault();
+      queueDelta(knob, e.deltaY < 0 ? 1 : -1);
+    }, { passive: false });
+  }
+
+  function wirePanel(panel) {
+    if (panel.dataset.wired) return;
+    panel.dataset.wired = '1';
+    $('easel-close').onclick = $('easel-exit').onclick = closePanel;
+    panel.querySelectorAll('[data-easel-page]').forEach(btn => {
+      btn.onclick = async () => {
+        wc.page = Number(btn.dataset.easelPage);
+        if (wc.api) { try { await wc.api.setPage(wc.track, wc.page); } catch (_) {} }
+        render();
+        refreshValues();
+      };
+    });
+    panel.querySelectorAll('.easel-knob').forEach(el => {
+      wireKnob(el, Number(el.dataset.easelKnob));
+    });
+  }
+
+  async function openPanel() {
+    const api = await waitForApi();
+    wc.api = api;
+    
+    // Get current track from FM1
+    const t = await api.currentTrack();
+    wc.track = t & ~1; // Force even base track
+    
+    const startBtn = document.getElementById('sim-start');
+    if (startBtn && startBtn.getAttribute('aria-pressed') === 'false') startBtn.click();
+
+    try { 
+      await api.enter(wc.track); 
+      // Explicitly select the base track so the UI follows
+      await api.select(wc.track);
+    }
+    catch (e) {
+      console.error("Easel enter error:", e);
+      alert('Easel FM failed to initialize. Make sure tracks are available.');
+      return;
     }
 
-    state[idx].enabled = 1;
-    state[idx].page = 0;
-    return 0;
-}
+    const panel = buildPanel();
+    if (!panel) return;
+    wc.page = await api.page(wc.track);
+    wc.visible = true;
+    panel.hidden = false;
+    wirePanel(panel);
+    await refreshValues();
+  }
 
-EXPORT("sim_easel_leave") void sim_easel_leave(unsigned track) {
-    ensure_init();
-    unsigned idx = (track & ~1U) / 2;
-    if (idx < 4) state[idx].enabled = 0;
-}
+  async function closePanel() {
+    const panel = $('sim-easel-panel');
+    if (panel) panel.hidden = true;
+    wc.visible = false;
+    if (wc.api) { try { await wc.api.leave(wc.track); } catch (_) {} }
+  }
 
-EXPORT("sim_easel_page") unsigned sim_easel_page(unsigned track) {
-    ensure_init();
-    unsigned idx = (track & ~1U) / 2;
-    return idx < 4 ? state[idx].page : 0;
-}
+  async function main() {
+    const btn = addEaselButton();
+    if (!btn) { setTimeout(main, 300); return; }
+    btn.disabled = true;
+    await waitForApi();
+    btn.disabled = false;
+    btn.onclick = openPanel;
+  }
 
-EXPORT("sim_easel_set_page") void sim_easel_set_page(unsigned track, unsigned page) {
-    ensure_init();
-    unsigned idx = (track & ~1U) / 2;
-    if (idx < 4) state[idx].page = (uint8_t)(page % 4);
-}
-
-EXPORT("sim_easel_adjust") int sim_easel_adjust(unsigned track, unsigned knob, int delta) {
-    ensure_init();
-    unsigned base = track & ~1U;
-    unsigned fm = base;
-    unsigned plk = base + 1;
-    unsigned idx = base / 2;
-    if (idx >= 4 || !state[idx].enabled || !delta) return -1;
-
-    unsigned page = state[idx].page;
-
-    if (page == 0) { // VOICE
-        switch (knob) {
-            case 0: // FOLD (Index + Feedback)
-                groove_fm_edit(fm, 16, delta); // OP6 OUT
-                if (delta > 0) groove_fm_edit(fm, 135, 1); // Feedback up
-                break;
-            case 1: groove_fm_edit(fm, 18, delta); break; // RATIO
-            case 2: groove_fm_edit(fm, 19, delta); break; // FINE
-            case 3: groove_fm_edit(fm, 134, delta); break; // WAVE (Algorithm)
-        }
-    } else if (page == 1) { // MOTION
-        switch (knob) {
-            case 0: // RISE
-                groove_adsr_edit(fm, 0, delta);
-                groove_tone_edit(plk, 0, 2, delta); // Pluck attack (if any)
-                break;
-            case 1: // FALL
-                groove_adsr_edit(fm, 1, delta); 
-                groove_adsr_edit(fm, 3, delta);
-                break;
-            case 2: // LOOP
-                if (delta > 0) {
-                    groove_arp_set(fm, 1); groove_arp_set(plk, 1);
-                    groove_arp_edit(fm, 0, 3); groove_arp_edit(plk, 0, 3); // 1/32
-                } else {
-                    groove_arp_set(fm, 0); groove_arp_set(plk, 0);
-                }
-                break;
-            case 3: // DEPTH (Pitch EG)
-                groove_fm_edit(fm, 130, delta); 
-                break;
-        }
-    } else if (page == 2) { // GATE
-        switch (knob) {
-            case 0: // LEVEL (Pluck Decay)
-                groove_tone_edit(plk, 0, 0, delta); 
-                break;
-            case 1: // SOFT (Pluck Brightness)
-                groove_tone_edit(plk, 0, 1, delta); 
-                break;
-            case 2: // RAND PITCH
-                groove_fm_edit(fm, 139, delta); 
-                break;
-            case 3: // RAND TIMBRE
-                groove_fm_edit(fm, 140, delta); 
-                break;
-        }
-    } else if (page == 3) { // SEQUENCE
-        switch (knob) {
-            case 0: groove_tempo_edit(delta); break;
-            case 1: groove_sequence_setting_edit(0, delta); break; // Swing
-            case 2: {
-                unsigned len = groove_sequence_length(fm);
-                int next = (int)(len / 16) + delta;
-                if (next < 1) next = 1;
-                if (next > 4) next = 4;
-                groove_sequence_length_set(fm, next * 16);
-                groove_sequence_length_set(plk, next * 16);
-                break;
-            }
-            case 3: groove_fm_edit(fm, 144, delta); break; // Transpose
-        }
-    }
-    return 0;
-}
-
-EXPORT("sim_easel_read") void sim_easel_read(unsigned track) {
-    ensure_init();
-    memset(read_buf, 0, 4);
-    unsigned base = track & ~1U;
-    unsigned fm = base;
-    unsigned plk = base + 1;
-    unsigned idx = base / 2;
-    if (idx >= 4) return;
-
-    unsigned page = state[idx].page;
-    uint8_t patch[156];
-    struct groove_fm_controls ctl = {0};
-    uint8_t plk_vals[GROOVE_TONE_PARAMS] = {0};
-
-    groove_fm_copy(fm, patch, &ctl);
-    groove_tone_copy(plk, 0, plk_vals);
-
-    if (page == 0) {
-        read_buf[0] = patch[16];  // Fold
-        read_buf[1] = patch[18];  // Ratio
-        read_buf[2] = patch[19];  // Fine
-        read_buf[3] = patch[134]; // Wave
-    } else if (page == 1) {
-        read_buf[0] = ctl.envelope[0]; // Rise
-        read_buf[1] = ctl.envelope[1]; // Fall
-        read_buf[2] = (uint8_t)groove_arp_enabled(fm);
-        read_buf[3] = patch[130]; // Depth
-    } else if (page == 2) {
-        read_buf[0] = plk_vals[0]; // Level
-        read_buf[1] = plk_vals[1]; // Soft
-        read_buf[2] = patch[139];  // Rand Pitch
-        read_buf[3] = patch[140];  // Rand Timbre
-    } else if (page == 3) {
-        struct groove_view v = {0};
-        groove_get_view(fm, 0, &v);
-        read_buf[0] = (uint8_t)v.tempo;
-        read_buf[1] = (uint8_t)groove_sequence_setting(0);
-        read_buf[2] = (uint8_t)v.next_length;
-        read_buf[3] = patch[144] + 24; // Transpose offset
-    }
-}
-
-EXPORT("sim_easel_read_buf") const uint8_t *sim_easel_read_buf(void) { return read_buf; }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', main);
+  else main();
+})();
