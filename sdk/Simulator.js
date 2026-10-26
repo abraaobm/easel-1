@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
 /* Modified 2026-10-17: reserve the final flash sector during sample imports.
- * Modified 2026-10-24: expose West Coast Web layer (wc_* commands). */
 (() => {
   'use strict';
   // One portable C instance owns the panel, project and sound state. Before
@@ -38,16 +37,16 @@
           case 'panic': c.sim_panic(); break;
           case 'tapTempo': c.sim_tap_tempo(); break;
           case 'select': result=c.sim_select(message.track,message.source); break;
-          case 'wc_enter':    result=c.sim_wc_enter(message.track); break;
-          case 'wc_leave':    c.sim_wc_leave(message.track); break;
-          case 'wc_adjust':   result=c.sim_wc_adjust(message.track,message.knob,message.delta); break;
-          case 'wc_reset':    result=c.sim_wc_reset_patch(message.track); break;
-          case 'wc_read':
-            c.sim_wc_read(message.track);
-            data=new Uint8Array(c.memory.buffer,c.sim_wc_read_buf(),16).slice();
+          case 'easel_enter':    result=c.sim_easel_enter(message.track); break;
+          case 'easel_leave':    c.sim_easel_leave(message.track); break;
+          case 'easel_adjust':   result=c.sim_easel_adjust(message.track,message.knob,message.delta); break;
+          case 'easel_reset':    result=c.sim_easel_reset_patch(message.track); break;
+          case 'easel_read':
+            c.sim_easel_read(message.track);
+            data=new Uint8Array(c.memory.buffer,c.sim_easel_read_buf(),16).slice();
             break;
-          case 'wc_set_page': c.sim_wc_set_page(message.track,message.page); break;
-          case 'wc_page':     data=c.sim_wc_page(message.track); break;
+          case 'easel_set_page': c.sim_easel_set_page(message.track,message.page); break;
+          case 'easel_page':     data=c.sim_easel_page(message.track); break;
           case 'open': result=c.sim_open(message.page); if(result)throw Error('当前音源不支持此编辑页。'); break;
           case 'preset': result=c.sim_preset(message.index); break;
           case 'step': result=c.sim_step(message.index,message.toggle?1:0); break;
@@ -876,16 +875,16 @@
     tracks:Array.from({length:8},(_,t)=>{const button=$('sim-track-'+t);return{button,source:button.querySelector('.track-source'),level:button.querySelector('.track-level'),dots:button.querySelectorAll('i')};})
   };
 
-  /* West Coast Web API: consumed by web/WestCoast.js. */
-  globalThis.FM1WC = {
-    enter:   track => request('wc_enter',  {track}),
-    leave:   track => request('wc_leave',  {track}),
-    adjust:  (track, knob, delta) => request('wc_adjust', {track, knob, delta}),
-    reset:   track => request('wc_reset',  {track}),
-    read:    track => request('wc_read',   {track}),
-    page:    track => request('wc_page',   {track}),
-    setPage: (track, page) => request('wc_set_page', {track, page}),
+ /* Easel FM Web API */
+  globalThis.FM1Easel = {
+    enter:   track => request('easel_enter',  {track}),
+    leave:   track => request('easel_leave',  {track}),
+    adjust:  (track, page, knob, delta) => request('easel_adjust', {track, page, knob, delta}),
+    read:    track => request('easel_read',   {track}),
+    page:    track => request('easel_page',   {track}),
+    setPage: (track, page) => request('easel_set_page', {track, page}),
     currentTrack: () => state ? state[0] : 0,
+    select:  (track) => request('select', {track, source: 6}), // Force UI update
   };
 
   availability();boot();
