@@ -6,7 +6,6 @@
 
   const wc = { visible: false, api: null, page: 0, state: [] };
 
-  // type: 'cont' (contínuo) ou 'switch' (chaveado)
   const PAGES = [
     { name: 'VOICE', knobs: [
       { label: 'SHAPE', type: 'cont', def: 0 },
@@ -25,10 +24,15 @@
       { label: 'AMOUNT', type: 'cont', def: 0 },
       { label: 'TARGET', type: 'switch', def: 0, labels: ['TIMBRE', 'PITCH'] },
       { label: 'SMOOTH', type: 'cont', def: 0 }
+    ]},
+    { name: 'SPACE', knobs: [
+      { label: 'P. AMOUNT', type: 'cont', def: 50 }, // Pitch Env
+      { label: 'P. DECAY', type: 'cont', def: 20 },  // Pitch Env Decay
+      { label: 'REV MIX', type: 'cont', def: 30 },
+      { label: 'REV TIME', type: 'cont', def: 50 }
     ]}
   ];
 
-  // Inicializa o estado com os valores padrão
   for (let p = 0; p < PAGES.length; p++) {
     wc.state[p] = PAGES[p].knobs.map(k => k.def);
   }
@@ -58,7 +62,7 @@
       .easel-header #easel-close:hover{color:#ff8a65}
       .easel-nav{display:flex;gap:4px;margin-bottom:10px}
       .easel-nav button{flex:1;padding:6px;background:#2e3b25;color:#aed581;
-        border:1px solid #33691e;border-radius:4px;cursor:pointer;font-size:10px;font-weight:bold}
+        border:1px solid #33691e;border-radius:4px;cursor:pointer;font-size:9px;font-weight:bold}
       .easel-nav button[aria-pressed=true]{background:#558b2f;color:#fff;border-color:#8bc34a}
       .easel-knobs{display:grid;grid-template-columns:1fr 1fr;gap:8px}
       .easel-knob{background:#263238;border:1px solid #455a64;border-radius:6px;
@@ -146,8 +150,6 @@
     panel.querySelectorAll('[data-easel-page]').forEach(b => {
       b.setAttribute('aria-pressed', String(Number(b.dataset.easelPage) === page));
     });
-    
-    // Carrega os valores salvos em vez de resetar
     panel.querySelectorAll('.easel-knob').forEach(el => {
       updateKnobUI(el, page, Number(el.dataset.easelKnob));
     });
@@ -173,10 +175,8 @@
         let val = wc.state[wc.page][knobIdx];
         
         if (def.type === 'switch') {
-            // Nos switches, qualquer movimento inverte o estado
             val = val > 50 ? 0 : 100;
         } else {
-            // Contínuo: move 1 unidade por pixel de arrasto
             val = Math.max(0, Math.min(100, val + d));
         }
         
@@ -223,14 +223,13 @@
         wireKnob(el, Number(el.dataset.easelKnob));
       });
       
-      // Envia o estado inicial para o motor
       for (let p = 0; p < PAGES.length; p++) {
         for (let k = 0; k < 4; k++) {
           if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(p * 4 + k, wc.state[p][k] / 100);
         }
       }
     }
-    renderPage(wc.page); // Restaura o visual para a página atual
+    renderPage(wc.page);
   }
 
   async function main() {
