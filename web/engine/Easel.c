@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
-/* Easel-1 Core DSP Engine - Com Euclidean Rhythms */
+/* Easel-1 Core DSP Engine - Com Sequenciador */
 #include <math.h>
 #include <string.h>
 #include <stdint.h>
@@ -37,9 +37,9 @@ static float p_fall = 0.3f;
 static int p_loop = 0;       // 0=OFF, 1=LFO, 2=EUCLID
 static float p_route = 0.0f;
 
-// Euclidean Parameters (enviados pelo JS quando LOOP = EUCLID)
-static float p_euclid_rate = 0.2f;   // Clock Rate
-static float p_euclid_pulses = 0.3f; // Quantidade de pulsos
+// Euclidean (MOTION - EUCLID)
+static float p_euclid_rate = 0.2f;
+static float p_euclid_pulses = 0.3f;
 
 // Source of Uncertainty (RANDOM)
 static float p_rand_rate = 0.5f;
@@ -47,11 +47,17 @@ static float p_rand_amt = 0.0f;
 static float p_rand_target = 0.0f;
 static float p_rand_smooth = 0.0f;
 
-// Space / Pitch
+// Space / Pitch (SPACE)
 static float p_pitch_amt = 0.5f;
 static float p_pitch_decay = 0.2f;
 static float p_reverb_mix = 0.3f;
 static float p_reverb_time = 0.5f;
+
+// Sequencer (SEQUENCE)
+static float p_seq_tempo = 0.0f;  // 0 = Parado
+static float p_seq_steps = 0.5f;  // 1 a 8 passos
+static float p_seq_pitch = 0.5f;  // Profundidade do Pitch
+static float p_seq_timbre = 0.0f; // Profundidade do Fold
 
 // Estados Internos
 static float fg_phase = 0.0f;
@@ -61,6 +67,12 @@ static uint8_t fg_running = 0;
 static float euclid_clock = 0.0f;
 static int euclid_step = 0;
 static int euclid_bucket = 0;
+
+static float seq_clock = 0.0f;
+static int seq_step = 0;
+static float seq_pitch_mod = 1.0f;
+static float seq_fold_mod = 1.0f;
+static const int seq_notes[8] = {0, 3, 5, 7, 10, 12, 15, 17}; // Pentatônica Menor
 
 static float rand_phase = 0.0f;
 static float rand_out = 0.0f;
@@ -152,7 +164,7 @@ void easel_set_param(int param, float val) {
     if (param == 3) p_lpg = val;
     if (param == 4) p_rise = val;
     if (param == 5) p_fall = val;
-    if (param == 6) p_loop = (int)(val * 2.9f); // 0, 1 ou 2
+    if (param == 6) p_loop = (int)(val * 2.9f);
     if (param == 7) p_route = val;
     if (param == 8) p_rand_rate = val;
     if (param == 9) p_rand_amt = val;
@@ -162,9 +174,12 @@ void easel_set_param(int param, float val) {
     if (param == 13) p_pitch_decay = val;
     if (param == 14) p_reverb_mix = val;
     if (param == 15) p_reverb_time = val;
-    // Parâmetros extras para Euclid
     if (param == 16) p_euclid_rate = val;
     if (param == 17) p_euclid_pulses = val;
+    if (param == 18) p_seq_tempo = val;
+    if (param == 19) p_seq_steps = val;
+    if (param == 20) p_seq_pitch = val;
+    if (param == 21) p_seq_timbre = val;
 }
 
 void easel_mix(int32_t *out, unsigned frames) {
@@ -172,9 +187,8 @@ void easel_mix(int32_t *out, unsigned frames) {
     memset(out, 0, frames * 2 * sizeof(int32_t));
 
     for (unsigned i = 0; i < frames; i++) {
-        // --- Function Generator (3 Modos) ---
+        // --- Function Generator (MOTION) ---
         if (p_loop == 2) {
-            // MODO EUCLID
             float rate_hz = 0.5f + p_euclid_rate * 9.5f;
             euclid_clock += rate_hz / sample_rate;
             if (euclid_clock >= 1.0f) {
@@ -188,18 +202,14 @@ void easel_mix(int32_t *out, unsigned frames) {
                     fg_running = 1;
                 }
             }
-            
             if (fg_running) {
-                float rise_time = 0.005f; // Envelope rápido para o ritmo
-                float fall_time = 0.05f;
-                float rate = (fg_phase < 1.0f) ? (1.0f / (rise_time * sample_rate)) : (1.0f / (fall_time * sample_rate));
+                float rate = (fg_phase < 1.0f) ? (1.0f / (0.005f * sample_rate)) : (1.0f / (0.05f * sample_rate));
                 fg_phase += rate;
                 if (fg_phase < 1.0f) fg_out = fg_phase;
                 else if (fg_phase < 2.0f) fg_out = 2.0f - fg_phase;
                 else { fg_phase = 2.0f; fg_out = 0.0f; fg_running = 0; }
             }
         } else if (p_loop == 1) {
-            // MODO LFO
             if (fg_running) {
                 float rise_time = 0.01f + p_rise * 2.0f;
                 float fall_time = 0.01f + p_fall * 2.0f;
@@ -210,7 +220,6 @@ void easel_mix(int32_t *out, unsigned frames) {
                 else { fg_phase -= 2.0f; }
             }
         } else {
-            // MODO OFF (Disparo Único)
             if (fg_running) {
                 float rise_time = 0.01f + p_rise * 2.0f;
                 float fall_time = 0.01f + p_fall * 2.0f;
@@ -222,7 +231,26 @@ void easel_mix(int32_t *out, unsigned frames) {
             }
         }
 
-        // --- Source of Uncertainty ---
+        // --- Sequenciador (SEQUENCE) ---
+        if (p_seq_tempo > 0.01f) {
+            float seq_rate_hz = 0.5f + p_seq_tempo * 15.0f;
+            seq_clock += seq_rate_hz / sample_rate;
+            if (seq_clock >= 1.0f) {
+                seq_clock -= 1.0f;
+                int max_steps = 1 + (int)(p_seq_steps * 7.0f);
+                seq_step = (seq_step + 1) % max_steps;
+                
+                // Calcula as modulações para o passo atual
+                float note_offset = (float)seq_notes[seq_step];
+                seq_pitch_mod = powf(2.0f, (note_offset * p_seq_pitch * 1.5f) / 12.0f);
+                seq_fold_mod = 1.0f + (note_offset * 0.1f * p_seq_timbre);
+            }
+        } else {
+            seq_pitch_mod = 1.0f;
+            seq_fold_mod = 1.0f;
+        }
+
+        // --- Source of Uncertainty (RANDOM) ---
         float rand_rate_hz = 0.1f + p_rand_rate * 19.9f;
         rand_phase += rand_rate_hz / sample_rate;
         if (rand_phase >= 1.0f) {
@@ -246,6 +274,10 @@ void easel_mix(int32_t *out, unsigned frames) {
             
             fold_mod += (rand_out * 1.0f * (1.0f - p_rand_target));
             pitch_mod *= powf(2.0f, (rand_out * 0.2f * p_rand_target));
+
+            // Adiciona a modulação do Sequenciador
+            fold_mod *= seq_fold_mod;
+            pitch_mod *= seq_pitch_mod;
 
             float p_decay_time = 0.01f + p_pitch_decay * 0.5f;
             float p_decay_rate = expf(-1.0f / (p_decay_time * sample_rate));
