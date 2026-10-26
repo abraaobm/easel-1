@@ -4,7 +4,12 @@
   if (typeof document === 'undefined') return;
   const $ = id => document.getElementById(id);
 
-  const wc = { visible: false, api: null };
+  const wc = { visible: false, api: null, page: 0 };
+
+  const PAGES = [
+    { name: 'VOICE', labels: ['SHAPE', 'FOLD', 'DECAY', 'LPG CUTOFF'], defaults: [0, 20, 50, 50] },
+    { name: 'MOTION', labels: ['RISE', 'FALL', 'LOOP', 'ROUTE'], defaults: [10, 30, 0, 0] }
+  ];
 
   function waitForApi() {
     return new Promise(resolve => {
@@ -29,6 +34,10 @@
       .easel-header #easel-close{background:none;border:none;color:#aed581;
         font-size:18px;cursor:pointer;padding:0 4px;line-height:1;margin-left:auto}
       .easel-header #easel-close:hover{color:#ff8a65}
+      .easel-nav{display:flex;gap:4px;margin-bottom:10px}
+      .easel-nav button{flex:1;padding:6px;background:#2e3b25;color:#aed581;
+        border:1px solid #33691e;border-radius:4px;cursor:pointer;font-size:10px;font-weight:bold}
+      .easel-nav button[aria-pressed=true]{background:#558b2f;color:#fff;border-color:#8bc34a}
       .easel-knobs{display:grid;grid-template-columns:1fr 1fr;gap:8px}
       .easel-knob{background:#263238;border:1px solid #455a64;border-radius:6px;
         padding:8px;text-align:center;user-select:none;touch-action:none;cursor:ns-resize;
@@ -44,7 +53,6 @@
       .easel-footer button:hover{background:#558b2f;color:#fff}
       .easel-footer button.test { background:#8bc34a; color:#1a1c18; border-color:#dcedc8;}
       .easel-footer button.test:hover { background:#aed581; }
-      .easel-state { margin-top:8px; font-size:9px; color:#607d8b; text-align:center; font-family:monospace; }
     `;
     document.head.appendChild(style);
   }
@@ -63,29 +71,20 @@
         <strong>EASEL-1 SYNTH</strong>
         <button id="easel-close" aria-label="Close">×</button>
       </div>
+      <div class="easel-nav">
+        ${PAGES.map((p, i) => `<button data-easel-page="${i}" aria-pressed="${i===0}">${p.name}</button>`).join('')}
+      </div>
       <div class="easel-knobs">
-        <div class="easel-knob" data-easel-knob="0">
-          <label>SHAPE</label><div class="easel-val">0</div>
-          <div class="easel-valbar"><i style="width:0"></i></div>
-        </div>
-        <div class="easel-knob" data-easel-knob="1">
-          <label>FOLD</label><div class="easel-val">20</div>
-          <div class="easel-valbar"><i style="width:20%"></i></div>
-        </div>
-        <div class="easel-knob" data-easel-knob="2">
-          <label>DECAY</label><div class="easel-val">50</div>
-          <div class="easel-valbar"><i style="width:50%"></i></div>
-        </div>
-        <div class="easel-knob" data-easel-knob="3">
-          <label>LPG CUTOFF</label><div class="easel-val">50</div>
-          <div class="easel-valbar"><i style="width:50%"></i></div>
-        </div>
+        ${[0,1,2,3].map(i => `
+          <div class="easel-knob" data-easel-knob="${i}">
+            <label>${PAGES[0].labels[i]}</label><div class="easel-val">${PAGES[0].defaults[i]}</div>
+            <div class="easel-valbar"><i style="width:${PAGES[0].defaults[i]}%"></i></div>
+          </div>`).join('')}
       </div>
       <div class="easel-footer">
         <button id="easel-test" class="test">TEST NOTE</button>
         <button id="easel-exit">Exit</button>
       </div>
-      <div id="easel-state" class="easel-state">ENGINE READY</div>
     `;
     device.appendChild(panel);
     return panel;
@@ -105,13 +104,16 @@
     return btn;
   }
 
-  function render(knob, val) {
+  function renderPage(page) {
+    wc.page = page;
     const panel = $('sim-easel-panel');
-    if (!panel) return;
-    const el = panel.querySelector(`[data-easel-knob="${knob}"]`);
-    if (!el) return;
-    el.querySelector('.easel-val').textContent = Math.round(val * 100);
-    el.querySelector('.easel-valbar > i').style.width = (val * 100) + '%';
+    panel.querySelectorAll('[data-easel-page]').forEach(b => {
+      b.setAttribute('aria-pressed', String(Number(b.dataset.easelPage) === page));
+    });
+    panel.querySelectorAll('.easel-knob').forEach(el => {
+      const i = Number(el.dataset.easelKnob);
+      el.querySelector('label').textContent = PAGES[page].labels[i];
+    });
   }
 
   function wireKnob(el, knob) {
@@ -130,13 +132,12 @@
         moved = true; lastY -= d * 4;
         const current = parseFloat(el.querySelector('.easel-val').textContent) / 100;
         const next = Math.max(0, Math.min(1, current + (d * 0.01)));
-        if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(knob, next);
-        render(knob, next);
         
-        // Atualiza o debug state
-        const stateTxt = `FOLD: ${Math.round(parseFloat(panel.querySelector('[data-easel-knob="1"] .easel-val').textContent))}% | LPG: ${Math.round(parseFloat(panel.querySelector('[data-easel-knob="3"] .easel-val').textContent))}%`;
-        const stateEl = document.getElementById('easel-state');
-        if (stateEl) stateEl.textContent = stateTxt;
+        // Envia o parâmetro correto baseado na página (Voice = 0-3, Motion = 4-7)
+        if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(wc.page * 4 + knob, next);
+        
+        el.querySelector('.easel-val').textContent = Math.round(next * 100);
+        el.querySelector('.easel-valbar > i').style.width = (next * 100) + '%';
       }
     });
     const up = e => {
@@ -166,17 +167,21 @@
           if (globalThis.FM1Easel) globalThis.FM1Easel.note(60, 127);
           setTimeout(() => { if (globalThis.FM1Easel) globalThis.FM1Easel.note(60, 0); }, 2000);
       };
+      
+      panel.querySelectorAll('[data-easel-page]').forEach(btn => {
+        btn.onclick = () => renderPage(Number(btn.dataset.easelPage));
+      });
+      
       panel.querySelectorAll('.easel-knob').forEach(el => {
         wireKnob(el, Number(el.dataset.easelKnob));
       });
       
-      globalThis.FM1Easel.setParam(0, 0.0);
-      globalThis.FM1Easel.setParam(1, 0.2);
-      globalThis.FM1Easel.setParam(2, 0.5);
-      globalThis.FM1Easel.setParam(3, 0.5);
-      
-      const stateEl = document.getElementById('easel-state');
-      if (stateEl) stateEl.textContent = 'FOLD: 20% | LPG: 50%';
+      // Inicializa o motor com os valores default
+      for (let p = 0; p < 2; p++) {
+        for (let k = 0; k < 4; k++) {
+          globalThis.FM1Easel.setParam(p * 4 + k, PAGES[p].defaults[k] / 100);
+        }
+      }
     }
   }
 
