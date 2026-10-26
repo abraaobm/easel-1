@@ -6,6 +6,7 @@
 
   const wc = { visible: false, api: null, page: 0, state: [] };
 
+  // type: 'cont', 'switch' (2 opções), 'switch3' (3 opções)
   const PAGES = [
     { name: 'VOICE', knobs: [
       { label: 'SHAPE', type: 'cont', def: 0 },
@@ -16,7 +17,7 @@
     { name: 'MOTION', knobs: [
       { label: 'RISE', type: 'cont', def: 10 },
       { label: 'FALL', type: 'cont', def: 30 },
-      { label: 'LOOP', type: 'switch', def: 0, labels: ['OFF', 'ON'] },
+      { label: 'LOOP', type: 'switch3', def: 0, labels: ['OFF', 'LFO', 'EUCLID'] },
       { label: 'ROUTE', type: 'switch', def: 0, labels: ['FOLD', 'PITCH'] }
     ]},
     { name: 'MOD/RAND', knobs: [
@@ -26,8 +27,8 @@
       { label: 'SMOOTH', type: 'cont', def: 0 }
     ]},
     { name: 'SPACE', knobs: [
-      { label: 'P. AMOUNT', type: 'cont', def: 50 }, // Pitch Env
-      { label: 'P. DECAY', type: 'cont', def: 20 },  // Pitch Env Decay
+      { label: 'P. AMOUNT', type: 'cont', def: 50 },
+      { label: 'P. DECAY', type: 'cont', def: 20 },
       { label: 'REV MIX', type: 'cont', def: 30 },
       { label: 'REV TIME', type: 'cont', def: 50 }
     ]}
@@ -133,11 +134,23 @@
   function updateKnobUI(el, page, knobIdx) {
     const def = PAGES[page].knobs[knobIdx];
     const val = wc.state[page][knobIdx];
-    el.querySelector('label').textContent = def.label;
     
+    // Labels Dinâmicos na Página MOTION
+    if (page === 1) {
+        if (knobIdx === 0 && wc.state[1][2] > 66) el.querySelector('label').textContent = 'CLOCK RATE';
+        else if (knobIdx === 1 && wc.state[1][2] > 66) el.querySelector('label').textContent = 'PULSES';
+        else el.querySelector('label').textContent = def.label;
+    } else {
+        el.querySelector('label').textContent = def.label;
+    }
+
     if (def.type === 'switch') {
       el.querySelector('.easel-val').textContent = def.labels[val > 50 ? 1 : 0];
       el.querySelector('.easel-valbar > i').style.width = (val > 50 ? 100 : 0) + '%';
+    } else if (def.type === 'switch3') {
+      let idx = val < 25 ? 0 : val < 75 ? 1 : 2;
+      el.querySelector('.easel-val').textContent = def.labels[idx];
+      el.querySelector('.easel-valbar > i').style.width = (idx * 50) + '%';
     } else {
       el.querySelector('.easel-val').textContent = Math.round(val);
       el.querySelector('.easel-valbar > i').style.width = val + '%';
@@ -176,13 +189,40 @@
         
         if (def.type === 'switch') {
             val = val > 50 ? 0 : 100;
+        } else if (def.type === 'switch3') {
+            if (val < 25) val = 50;
+            else if (val < 75) val = 100;
+            else val = 0;
         } else {
             val = Math.max(0, Math.min(100, val + d));
         }
         
         wc.state[wc.page][knobIdx] = val;
         
-        if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(wc.page * 4 + knobIdx, val / 100);
+        if (globalThis.FM1Easel) {
+            if (wc.page === 1 && knobIdx === 2) {
+                // LOOP mudou de estado. Atualiza o visual e envia os parâmetros corretos
+                updateKnobUI(el, wc.page, knobIdx);
+                globalThis.FM1Easel.setParam(6, val / 100);
+                // Reenvia os knobs 0 e 1 com o rótulo correto
+                updateKnobUI(el.parentElement.querySelector('[data-easel-knob="0"]'), 1, 0);
+                updateKnobUI(el.parentElement.querySelector('[data-easel-knob="1"]'), 1, 1);
+                if (val > 66) { // EUCLID
+                    globalThis.FM1Easel.setParam(16, wc.state[1][0] / 100);
+                    globalThis.FM1Easel.setParam(17, wc.state[1][1] / 100);
+                } else { // LFO ou OFF
+                    globalThis.FM1Easel.setParam(4, wc.state[1][0] / 100);
+                    globalThis.FM1Easel.setParam(5, wc.state[1][1] / 100);
+                }
+            } else if (wc.page === 1 && knobIdx === 0) {
+                globalThis.FM1Easel.setParam(wc.state[1][2] > 66 ? 16 : 4, val / 100);
+            } else if (wc.page === 1 && knobIdx === 1) {
+                globalThis.FM1Easel.setParam(wc.state[1][2] > 66 ? 17 : 5, val / 100);
+            } else {
+                globalThis.FM1Easel.setParam(wc.page * 4 + knobIdx, val / 100);
+            }
+        }
+        
         updateKnobUI(el, wc.page, knobIdx);
       }
     });
