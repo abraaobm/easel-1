@@ -80,7 +80,27 @@ static void wc_arp_configure(unsigned track, unsigned enable) {
 static int wc_install(unsigned track) {
     int r = groove_fm_import(track, wc_init_patch);
     if (r) return r;
-    groove_adsr_enable(track, 1);
+
+    /* Blindagem contra silêncio: garante que o ADSR está ativo e audível */
+    uint8_t patch[156];
+    struct groove_fm_controls ctl;
+    if (groove_fm_copy(track, patch, &ctl) == 0) {
+        groove_adsr_enable(track, 1);
+        if (ctl.envelope[0] < 10) groove_adsr_edit(track, 0, 20);  /* Attack */
+        if (ctl.envelope[1] < 10) groove_adsr_edit(track, 1, 50);  /* Decay */
+        if (ctl.envelope[2] < 50) groove_adsr_edit(track, 2, 99);  /* Sustain */
+        if (ctl.envelope[3] < 10) groove_adsr_edit(track, 3, 30);  /* Release */
+    } else {
+        groove_adsr_enable(track, 1);
+    }
+
+    /* Garante que a track não está com volume 0 */
+    struct groove_view v;
+    groove_get_view(track, 0, &v);
+    if (v.volume < 50) {
+        groove_control_edit(track, 0, 100, 0);
+    }
+
     return 0;
 }
 
