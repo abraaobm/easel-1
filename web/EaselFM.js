@@ -6,7 +6,6 @@
 
   const wc = { visible: false, api: null, page: 0, state: [] };
 
-  // type: 'cont', 'switch' (2 opções), 'switch3' (3 opções)
   const PAGES = [
     { name: 'VOICE', knobs: [
       { label: 'SHAPE', type: 'cont', def: 0 },
@@ -33,10 +32,10 @@
       { label: 'REV TIME', type: 'cont', def: 50 }
     ]},
     { name: 'SEQUENCE', knobs: [
-      { label: 'TEMPO', type: 'cont', def: 0 },
-      { label: 'STEPS', type: 'cont', def: 50 },
-      { label: 'PITCH AMT', type: 'cont', def: 50 },
-      { label: 'TIMBRE AMT', type: 'cont', def: 0 }
+      { label: 'TRANSPOSE', type: 'cont', def: 50 },
+      { label: 'OCTAVE', type: 'cont', def: 50 },
+      { label: 'SCALE', type: 'switch', def: 0, labels: ['FREE', 'PENTA'] },
+      { label: 'TIMBRE AMT', type: 'cont', def: 50 }
     ]}
   ];
 
@@ -142,7 +141,6 @@
     const def = PAGES[page].knobs[knobIdx];
     const val = wc.state[page][knobIdx];
     
-    // Labels Dinâmicos na Página MOTION
     if (page === 1) {
         if (knobIdx === 0 && wc.state[1][2] > 66) el.querySelector('label').textContent = 'CLOCK RATE';
         else if (knobIdx === 1 && wc.state[1][2] > 66) el.querySelector('label').textContent = 'PULSES';
@@ -159,7 +157,16 @@
       el.querySelector('.easel-val').textContent = def.labels[idx];
       el.querySelector('.easel-valbar > i').style.width = (idx * 50) + '%';
     } else {
-      el.querySelector('.easel-val').textContent = Math.round(val);
+      // No modo TRANSPOSE, mostra o valor real em semitons
+      if (page === 4 && knobIdx === 0) {
+          let v = Math.round(val - 50);
+          el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
+      } else if (page === 4 && knobIdx === 1) {
+          let v = Math.round((val - 50) / 25);
+          el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
+      } else {
+          el.querySelector('.easel-val').textContent = Math.round(val);
+      }
       el.querySelector('.easel-valbar > i').style.width = val + '%';
     }
   }
@@ -180,17 +187,16 @@
     updateKnobUI(el, page, knobIdx);
 
     if (globalThis.FM1Easel) {
-        // SEQUENCE usa parâmetros 18 a 21 em vez de 16 a 19
         let paramIdx = page === 4 ? 18 + knobIdx : page * 4 + knobIdx;
 
         if (page === 1 && knobIdx === 2) {
             globalThis.FM1Easel.setParam(6, val / 100);
             updateKnobUI(el.parentElement.querySelector('[data-easel-knob="0"]'), 1, 0);
             updateKnobUI(el.parentElement.querySelector('[data-easel-knob="1"]'), 1, 1);
-            if (val > 66) { // EUCLID
+            if (val > 66) {
                 globalThis.FM1Easel.setParam(16, wc.state[1][0] / 100);
                 globalThis.FM1Easel.setParam(17, wc.state[1][1] / 100);
-            } else { // LFO ou OFF
+            } else {
                 globalThis.FM1Easel.setParam(4, wc.state[1][0] / 100);
                 globalThis.FM1Easel.setParam(5, wc.state[1][1] / 100);
             }
