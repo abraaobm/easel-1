@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
-/* Easel-1 Core DSP Engine - Com Pulse Width */
+/* Easel-1 Core DSP Engine - Com Serialização (Program Cards) */
 #include <math.h>
 #include <string.h>
 #include <stdint.h>
@@ -15,7 +15,7 @@
 typedef struct {
     float phase;
     float env;
-    float hold_timer; // NOVO: Temporizador do Pulse Width
+    float hold_timer;
     float lpg_low;
     float freq;
     float velocity;
@@ -26,7 +26,6 @@ typedef struct {
 
 static easel_voice_t voices[8];
 
-// Parâmetros Globais
 static float p_engine_mode = 0.0f; 
 static float p_shape = 0.0f;       
 static float p_fold = 0.2f;
@@ -36,14 +35,14 @@ static float p_lpg = 0.5f;
 static float p_rise = 0.1f;
 static float p_fall = 0.3f;
 static int p_loop = 0;
-static float p_pulse_width = 0.0f; // NOVO: Pulse Width (0 a 1)
+static float p_pulse_width = 0.0f;
 
 static float p_euclid_rate = 0.2f;
 static float p_euclid_pulses = 0.3f;
 
 static float p_rand_rate = 0.5f;
 static float p_rand_amt = 0.0f;
-static float p_rand_target = 0.0f; // Agora controla o destino do FG e do Random
+static float p_rand_target = 0.0f;
 static float p_rand_smooth = 0.0f;
 
 static float p_pitch_amt = 0.5f;
@@ -56,7 +55,6 @@ static float p_seq_octave = 0.5f;
 static float p_seq_timbre = 0.5f;
 static float p_seq_lpg_offset = 0.5f;
 
-// Estados
 static float fg_phase = 0.0f;
 static float fg_out = 0.0f;
 static uint8_t fg_running = 0;
@@ -80,12 +78,75 @@ static float get_random() {
     return ((float)rand_seed / 1073741824.0f) - 1.0f;
 }
 
+// --- SERIALIZAÇÃO PARA O PROGRAM CARD ---
+void easel_serialize(uint8_t *buf) {
+    memset(buf, 0, 156);
+    buf[0] = 'E'; buf[1] = 'A'; buf[2] = 'S'; buf[3] = 'L';
+    buf[4] = (uint8_t)(p_shape * 255.0f);
+    buf[5] = (uint8_t)(p_fold * 255.0f);
+    buf[6] = (uint8_t)(p_decay * 255.0f);
+    buf[7] = (uint8_t)(p_lpg * 255.0f);
+    buf[8] = (uint8_t)(p_rise * 255.0f);
+    buf[9] = (uint8_t)(p_fall * 255.0f);
+    buf[10] = (uint8_t)(p_loop * 127.0f);
+    buf[11] = (uint8_t)(p_pulse_width * 255.0f);
+    buf[12] = (uint8_t)(p_rand_rate * 255.0f);
+    buf[13] = (uint8_t)(p_rand_amt * 255.0f);
+    buf[14] = (uint8_t)(p_rand_target * 255.0f);
+    buf[15] = (uint8_t)(p_rand_smooth * 255.0f);
+    buf[16] = (uint8_t)(p_pitch_amt * 255.0f);
+    buf[17] = (uint8_t)(p_pitch_decay * 255.0f);
+    buf[18] = (uint8_t)(p_reverb_mix * 255.0f);
+    buf[19] = (uint8_t)(p_reverb_time * 255.0f);
+    buf[20] = (uint8_t)(p_euclid_rate * 255.0f);
+    buf[21] = (uint8_t)(p_euclid_pulses * 255.0f);
+    buf[22] = (uint8_t)(p_seq_transpose * 255.0f);
+    buf[23] = (uint8_t)(p_seq_octave * 255.0f);
+    buf[24] = (uint8_t)(p_seq_timbre * 255.0f);
+    buf[25] = (uint8_t)(p_seq_lpg_offset * 255.0f);
+    buf[26] = (uint8_t)(p_engine_mode * 255.0f);
+}
+
+void easel_deserialize(const uint8_t *buf) {
+    if (buf[0] != 'E' || buf[1] != 'A' || buf[2] != 'S' || buf[3] != 'L') return;
+    p_shape = buf[4] / 255.0f;
+    p_fold = buf[5] / 255.0f;
+    p_decay = buf[6] / 255.0f;
+    p_lpg = buf[7] / 255.0f;
+    p_rise = buf[8] / 255.0f;
+    p_fall = buf[9] / 255.0f;
+    p_loop = (int)(buf[10] / 50.0f);
+    if (p_loop > 2) p_loop = 2;
+    p_pulse_width = buf[11] / 255.0f;
+    p_rand_rate = buf[12] / 255.0f;
+    p_rand_amt = buf[13] / 255.0f;
+    p_rand_target = buf[14] / 255.0f;
+    p_rand_smooth = buf[15] / 255.0f;
+    p_pitch_amt = buf[16] / 255.0f;
+    p_pitch_decay = buf[17] / 255.0f;
+    p_reverb_mix = buf[18] / 255.0f;
+    p_reverb_time = buf[19] / 255.0f;
+    p_euclid_rate = buf[20] / 255.0f;
+    p_euclid_pulses = buf[21] / 255.0f;
+    p_seq_transpose = buf[22] / 255.0f;
+    p_seq_octave = buf[23] / 255.0f;
+    p_seq_timbre = buf[24] / 255.0f;
+    p_seq_lpg_offset = buf[25] / 255.0f;
+    p_engine_mode = buf[26] / 255.0f;
+}
+
+EXPORT("sim_easel_get_state") const uint8_t *sim_easel_get_state(void) {
+    static uint8_t buf[156];
+    easel_serialize(buf);
+    return buf;
+}
+
+// --- MOTORES DE SÍNTESE ---
 static float synth_core(float phase, float shape, float engine) {
     float sine = sinf(phase * 6.2831853f);
     int mode = (int)(engine * 3.1f);
 
     if (mode == 0) {
-        // CLASSIC
         float tri = 2.0f * fabsf(2.0f * (phase - floorf(phase + 0.5f))) - 1.0f;
         float saw = 2.0f * phase - 1.0f;
         float square = (phase < 0.5f) ? 1.0f : -1.0f;
@@ -93,16 +154,13 @@ static float synth_core(float phase, float shape, float engine) {
         else if (shape < 0.66f) { float t = (shape - 0.33f) * 3.0f; return tri * (1.0f - t) + saw * t; }
         else { float t = (shape - 0.66f) * 3.0f; return saw * (1.0f - t) + square * t; }
     } else if (mode == 1) {
-        // FM
         float mod = sinf(phase * 6.2831853f * 2.0f);
         float index = shape * 15.0f;
         return sinf(phase * 6.2831853f + mod * index);
     } else if (mode == 2) {
-        // RING
         float modulator = sinf(phase * 6.2831853f * 1.414f);
         return sine * (1.0f - shape) + (sine * modulator) * shape;
     } else {
-        // PHASE
         float dist = shape * 0.9f;
         float ph = phase;
         if (ph < 0.5f) ph = ph * (1.0f + dist);
@@ -130,7 +188,7 @@ void easel_note_on(uint8_t note, uint8_t vel) {
             voices[i].pitch_env = 1.0f;
             voices[i].velocity = vel / 127.0f;
             voices[i].freq = base_freq;
-            voices[i].hold_timer = p_pulse_width * 1.5f; // Até 1.5s de sustain
+            voices[i].hold_timer = p_pulse_width * 1.5f;
             fg_phase = 0.0f;
             fg_running = 1;
             if (p_loop == 2) { euclid_clock = 0.0f; euclid_step = 0; euclid_bucket = 0; }
@@ -183,7 +241,7 @@ void easel_set_param(int param, float val) {
     if (param == 4) p_rise = val;
     if (param == 5) p_fall = val;
     if (param == 6) p_loop = (int)(val * 2.9f);
-    if (param == 7) p_pulse_width = val; // NOVO: Pulse Width
+    if (param == 7) p_pulse_width = val; 
     if (param == 8) p_rand_rate = val;
     if (param == 9) p_rand_amt = val;
     if (param == 10) p_rand_target = val;
@@ -206,7 +264,6 @@ void easel_mix(int32_t *out, unsigned frames) {
     memset(out, 0, frames * 2 * sizeof(int32_t));
 
     for (unsigned i = 0; i < frames; i++) {
-        // Function Generator
         if (p_loop == 2) {
             float rate_hz = 0.5f + p_euclid_rate * 9.5f;
             euclid_clock += rate_hz / sample_rate;
@@ -250,7 +307,6 @@ void easel_mix(int32_t *out, unsigned frames) {
             }
         }
 
-        // Random
         float rand_rate_hz = 0.1f + p_rand_rate * 19.9f;
         rand_phase += rand_rate_hz / sample_rate;
         if (rand_phase >= 1.0f) {
@@ -272,7 +328,6 @@ void easel_mix(int32_t *out, unsigned frames) {
             if (!voices[v].active) continue;
             active_count++;
             
-            // Roteamento Unificado (FG e Random usam o mesmo TARGET)
             float fg_fold = 1.0f + (fg_out * 1.5f * (1.0f - p_rand_target));
             float fg_pitch = powf(2.0f, (fg_out * 1.0f * p_rand_target));
             
@@ -302,11 +357,10 @@ void easel_mix(int32_t *out, unsigned frames) {
             }
             float folded = u;
 
-            // Lógica do Pulse Width (Hold do Envelope)
             float envelope_out;
             if (voices[v].hold_timer > 0.0f) {
                 voices[v].hold_timer -= 1.0f / sample_rate;
-                envelope_out = 1.0f; // Segura o LPG aberto
+                envelope_out = 1.0f; 
             } else {
                 float decay_time = 0.1f + p_decay * 2.0f;
                 float decay_rate = expf(-1.0f / (decay_time * 44100.0f));
