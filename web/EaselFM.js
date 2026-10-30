@@ -114,7 +114,7 @@
     panel.hidden = true;
     panel.innerHTML = `
       <div class="easel-header">
-        <strong>EASEL-1 <span>v2.3</span></strong>
+        <strong>EASEL-1 <span>v2.4</span></strong>
         <button id="easel-close" aria-label="Close">×</button>
       </div>
       <div class="easel-nav">
@@ -288,6 +288,22 @@
     el.addEventListener('pointercancel', up);
   }
 
+  function updateEngineUI(newEngine) {
+    wc.engine = newEngine;
+    const panel = $('sim-easel-panel');
+    if (panel) {
+        panel.querySelectorAll('[data-easel-engine]').forEach(b => {
+            b.setAttribute('aria-pressed', String(Number(b.dataset.easelEngine) === wc.engine));
+        });
+        updateKnobUI(panel.querySelector('[data-easel-knob="0"]'), 0, 0);
+    }
+    if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(22, wc.engine / 3.0);
+  }
+
+  globalThis.FM1EaselChangeEngine = (delta) => {
+    updateEngineUI((wc.engine + (delta > 0 ? 1 : 3)) % 4);
+  };
+
   async function openPanel() {
     const api = await waitForApi();
     wc.api = api;
@@ -298,11 +314,16 @@
     const panel = buildPanel();
     if (!panel) return;
     wc.visible = true;
+    globalThis.FM1EaselIsOpen = true;
     panel.hidden = false;
     
     if (!panel.dataset.wired) {
       panel.dataset.wired = '1';
-      $('easel-close').onclick = $('easel-exit').onclick = () => { panel.hidden = true; };
+      $('easel-close').onclick = $('easel-exit').onclick = () => { 
+          panel.hidden = true; 
+          wc.visible = false;
+          globalThis.FM1EaselIsOpen = false;
+      };
       $('easel-test').onclick = () => {
           if (globalThis.FM1Easel) globalThis.FM1Easel.note(60, 127);
           setTimeout(() => { if (globalThis.FM1Easel) globalThis.FM1Easel.note(60, 0); }, 2000);
@@ -313,14 +334,7 @@
       });
 
       panel.querySelectorAll('[data-easel-engine]').forEach(btn => {
-        btn.onclick = () => {
-            wc.engine = Number(btn.dataset.easelEngine);
-            panel.querySelectorAll('[data-easel-engine]').forEach(b => {
-                b.setAttribute('aria-pressed', String(Number(b.dataset.easelEngine) === wc.engine));
-            });
-            if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(22, wc.engine / 3.0); 
-            updateKnobUI(panel.querySelector('[data-easel-knob="0"]'), 0, 0);
-        };
+        btn.onclick = () => updateEngineUI(Number(btn.dataset.easelEngine));
       });
       
       panel.querySelectorAll('.easel-knob').forEach(el => {
@@ -340,21 +354,18 @@
     renderPage(wc.page);
   }
 
-  // --- SINCRONIZAÇÃO COM OS PRESETS (PROGRAM CARDS) ---
   function syncFromEngine() {
     if (!globalThis.FM1Easel) return;
     const data = globalThis.FM1Easel.getState();
-    if (!data || data[0] !== 69 || data[1] !== 65 || data[2] !== 83 || data[3] !== 76) return; // 'E','A','S','L'
+    if (!data || data[0] !== 69 || data[1] !== 65 || data[2] !== 83 || data[3] !== 76) return;
     
     wc.engine = Math.round(data[26] / 255 * 3);
     
-    // VOICE
     wc.state[0][0] = data[4] / 255 * 100;
     wc.state[0][1] = data[5] / 255 * 100;
     wc.state[0][2] = data[6] / 255 * 100;
     wc.state[0][3] = data[7] / 255 * 100;
     
-    // MOTION
     wc.state[1][2] = data[10] > 50 ? 100 : 0;
     if (wc.state[1][2] > 66) {
         wc.state[1][0] = data[20] / 255 * 100;
@@ -365,19 +376,16 @@
     }
     wc.state[1][3] = data[11] / 255 * 100;
     
-    // MOD/RAND
     wc.state[2][0] = data[12] / 255 * 100;
     wc.state[2][1] = data[13] / 255 * 100;
     wc.state[2][2] = data[14] > 50 ? 100 : 0;
     wc.state[2][3] = data[15] / 255 * 100;
     
-    // SPACE
     wc.state[3][0] = data[16] / 255 * 100;
     wc.state[3][1] = data[17] / 255 * 100;
     wc.state[3][2] = data[18] / 255 * 100;
     wc.state[3][3] = data[19] / 255 * 100;
     
-    // SEQUENCE
     wc.state[4][0] = data[22] / 255 * 100;
     wc.state[4][1] = data[23] / 255 * 100;
     wc.state[4][2] = data[24] / 255 * 100;
