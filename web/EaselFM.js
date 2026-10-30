@@ -17,7 +17,7 @@
       { label: 'RISE', type: 'cont', def: 10 },
       { label: 'FALL', type: 'cont', def: 30 },
       { label: 'LOOP', type: 'switch3', def: 0, labels: ['OFF', 'LFO', 'EUCLID'] },
-      { label: 'ROUTE', type: 'switch', def: 0, labels: ['FOLD', 'PITCH'] }
+      { label: 'PULSE WIDTH', type: 'cont', def: 0 }
     ]},
     { name: 'MOD/RAND', knobs: [
       { label: 'RATE', type: 'cont', def: 50 },
@@ -39,7 +39,6 @@
     ]}
   ];
 
-  // Engines e os nomes dinâmicos do Knob 1 (SHAPE)
   const ENGINES = [
     { name: 'CLASSIC', label: 'SHAPE' },
     { name: 'FM',      label: 'FM INDEX' },
@@ -115,7 +114,7 @@
     panel.hidden = true;
     panel.innerHTML = `
       <div class="easel-header">
-        <strong>EASEL-1 <span>v2.1</span></strong>
+        <strong>EASEL-1 <span>v2.2</span></strong>
         <button id="easel-close" aria-label="Close">×</button>
       </div>
       <div class="easel-nav">
@@ -196,7 +195,6 @@
       b.setAttribute('aria-pressed', String(Number(b.dataset.easelPage) === page));
     });
     
-    // Mostra os botões de engine apenas na página VOICE
     const engRow = $('easel-engines');
     if (page === 0) engRow.classList.remove('hidden');
     else engRow.classList.add('hidden');
@@ -228,6 +226,8 @@
             globalThis.FM1Easel.setParam(wc.state[1][2] > 66 ? 16 : 4, val / 100);
         } else if (page === 1 && knobIdx === 1) {
             globalThis.FM1Easel.setParam(wc.state[1][2] > 66 ? 17 : 5, val / 100);
+        } else if (page === 1 && knobIdx === 3) {
+            globalThis.FM1Easel.setParam(7, val / 100); // Envia Pulse Width
         } else {
             globalThis.FM1Easel.setParam(paramIdx, val / 100);
         }
@@ -318,7 +318,7 @@
             panel.querySelectorAll('[data-easel-engine]').forEach(b => {
                 b.setAttribute('aria-pressed', String(Number(b.dataset.easelEngine) === wc.engine));
             });
-            if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(22, wc.engine / 3.0); // Envia 0.0, 0.33, 0.66, 1.0
+            if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(22, wc.engine / 3.0); 
             updateKnobUI(panel.querySelector('[data-easel-knob="0"]'), 0, 0);
         };
       });
