@@ -4,7 +4,7 @@
   if (typeof document === 'undefined') return;
   const $ = id => document.getElementById(id);
 
-  const wc = { visible: false, api: null, page: 0, state: [] };
+  const wc = { visible: false, api: null, page: 0, state: [], engine: 0 };
 
   const PAGES = [
     { name: 'VOICE', knobs: [
@@ -39,6 +39,14 @@
     ]}
   ];
 
+  // Engines e os nomes dinâmicos do Knob 1 (SHAPE)
+  const ENGINES = [
+    { name: 'CLASSIC', label: 'SHAPE' },
+    { name: 'FM',      label: 'FM INDEX' },
+    { name: 'RING',    label: 'RING DEPTH' },
+    { name: 'PHASE',   label: 'PD AMOUNT' }
+  ];
+
   for (let p = 0; p < PAGES.length; p++) {
     wc.state[p] = PAGES[p].knobs.map(k => k.def);
   }
@@ -63,7 +71,6 @@
       .easel-header{display:flex;align-items:center;gap:8px;
         border-bottom:1px solid #33691e;padding-bottom:6px;margin-bottom:10px}
       .easel-header strong{color:#8bc34a;letter-spacing:.1em;font-size:12px;text-shadow:0 0 5px #8bc34a50}
-      .easel-header span { color:#689f38; font-size:10px; margin-left:4px; }
       .easel-header #easel-close{background:none;border:none;color:#aed581;
         font-size:18px;cursor:pointer;padding:0 4px;line-height:1;margin-left:auto}
       .easel-header #easel-close:hover{color:#ff8a65}
@@ -71,6 +78,13 @@
       .easel-nav button{flex:1;padding:6px;background:#2e3b25;color:#aed581;
         border:1px solid #33691e;border-radius:4px;cursor:pointer;font-size:9px;font-weight:bold}
       .easel-nav button[aria-pressed=true]{background:#558b2f;color:#fff;border-color:#8bc34a}
+      
+      .easel-engines{display:flex;gap:4px;margin-bottom:10px}
+      .easel-engines button{flex:1;padding:4px;background:#1c2620;color:#689f38;
+        border:1px solid #2e3b25;border-radius:4px;cursor:pointer;font-size:9px;font-weight:bold}
+      .easel-engines button[aria-pressed=true]{background:#8bc34a;color:#1a1c18;border-color:#dcedc8}
+      .easel-engines.hidden { display: none; }
+
       .easel-knobs{display:grid;grid-template-columns:1fr 1fr;gap:8px}
       .easel-knob{background:#263238;border:1px solid #455a64;border-radius:6px;
         padding:8px;text-align:center;user-select:none;touch-action:none;cursor:ns-resize;
@@ -101,11 +115,14 @@
     panel.hidden = true;
     panel.innerHTML = `
       <div class="easel-header">
-        <strong>EASEL-1 <span>v2.0</span></strong>
+        <strong>EASEL-1 <span>v2.1</span></strong>
         <button id="easel-close" aria-label="Close">×</button>
       </div>
       <div class="easel-nav">
         ${PAGES.map((p, i) => `<button data-easel-page="${i}" aria-pressed="${i===0}">${p.name}</button>`).join('')}
+      </div>
+      <div class="easel-engines" id="easel-engines">
+        ${ENGINES.map((e, i) => `<button data-easel-engine="${i}" aria-pressed="${i===0}">${e.name}</button>`).join('')}
       </div>
       <div class="easel-knobs">
         ${[0,1,2,3].map(i => `
@@ -141,7 +158,9 @@
     const def = PAGES[page].knobs[knobIdx];
     const val = wc.state[page][knobIdx];
     
-    if (page === 1) {
+    if (page === 0 && knobIdx === 0) {
+        el.querySelector('label').textContent = ENGINES[wc.engine].label;
+    } else if (page === 1) {
         if (knobIdx === 0 && wc.state[1][2] > 66) el.querySelector('label').textContent = 'CLOCK RATE';
         else if (knobIdx === 1 && wc.state[1][2] > 66) el.querySelector('label').textContent = 'PULSES';
         else el.querySelector('label').textContent = def.label;
@@ -176,6 +195,12 @@
     panel.querySelectorAll('[data-easel-page]').forEach(b => {
       b.setAttribute('aria-pressed', String(Number(b.dataset.easelPage) === page));
     });
+    
+    // Mostra os botões de engine apenas na página VOICE
+    const engRow = $('easel-engines');
+    if (page === 0) engRow.classList.remove('hidden');
+    else engRow.classList.add('hidden');
+
     panel.querySelectorAll('.easel-knob').forEach(el => {
       updateKnobUI(el, page, Number(el.dataset.easelKnob));
     });
@@ -211,7 +236,6 @@
 
   function wireKnob(el, knobIdx) {
     let lastY = 0, moved = false;
-    const def = PAGES[wc.page].knobs[knobIdx];
     
     el.addEventListener('pointerdown', e => {
       if (e.button !== 0) return;
@@ -228,6 +252,7 @@
         moved = true; lastY -= d * 4;
         const current = wc.state[wc.page][knobIdx];
         let next = current;
+        const def = PAGES[wc.page].knobs[knobIdx];
         
         if (def.type === 'switch') {
             next = current > 50 ? 0 : 100;
@@ -246,8 +271,9 @@
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
       el.classList.remove('drag');
       
-      if (!moved && def.type !== 'cont') {
+      if (!moved && PAGES[wc.page].knobs[knobIdx].type !== 'cont') {
           const current = wc.state[wc.page][knobIdx];
+          const def = PAGES[wc.page].knobs[knobIdx];
           let next;
           if (def.type === 'switch') next = current > 50 ? 0 : 100;
           else if (def.type === 'switch3') {
@@ -285,6 +311,17 @@
       panel.querySelectorAll('[data-easel-page]').forEach(btn => {
         btn.onclick = () => renderPage(Number(btn.dataset.easelPage));
       });
+
+      panel.querySelectorAll('[data-easel-engine]').forEach(btn => {
+        btn.onclick = () => {
+            wc.engine = Number(btn.dataset.easelEngine);
+            panel.querySelectorAll('[data-easel-engine]').forEach(b => {
+                b.setAttribute('aria-pressed', String(Number(b.dataset.easelEngine) === wc.engine));
+            });
+            if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(22, wc.engine / 3.0); // Envia 0.0, 0.33, 0.66, 1.0
+            updateKnobUI(panel.querySelector('[data-easel-knob="0"]'), 0, 0);
+        };
+      });
       
       panel.querySelectorAll('.easel-knob').forEach(el => {
         wireKnob(el, Number(el.dataset.easelKnob));
@@ -298,6 +335,7 @@
           }
         }
       }
+      if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(22, 0);
     }
     renderPage(wc.page);
   }
