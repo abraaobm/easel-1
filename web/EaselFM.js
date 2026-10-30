@@ -114,7 +114,7 @@
     panel.hidden = true;
     panel.innerHTML = `
       <div class="easel-header">
-        <strong>EASEL-1 <span>v2.2</span></strong>
+        <strong>EASEL-1 <span>v2.3</span></strong>
         <button id="easel-close" aria-label="Close">×</button>
       </div>
       <div class="easel-nav">
@@ -227,7 +227,7 @@
         } else if (page === 1 && knobIdx === 1) {
             globalThis.FM1Easel.setParam(wc.state[1][2] > 66 ? 17 : 5, val / 100);
         } else if (page === 1 && knobIdx === 3) {
-            globalThis.FM1Easel.setParam(7, val / 100); // Envia Pulse Width
+            globalThis.FM1Easel.setParam(7, val / 100);
         } else {
             globalThis.FM1Easel.setParam(paramIdx, val / 100);
         }
@@ -339,6 +339,64 @@
     }
     renderPage(wc.page);
   }
+
+  // --- SINCRONIZAÇÃO COM OS PRESETS (PROGRAM CARDS) ---
+  function syncFromEngine() {
+    if (!globalThis.FM1Easel) return;
+    const data = globalThis.FM1Easel.getState();
+    if (!data || data[0] !== 69 || data[1] !== 65 || data[2] !== 83 || data[3] !== 76) return; // 'E','A','S','L'
+    
+    wc.engine = Math.round(data[26] / 255 * 3);
+    
+    // VOICE
+    wc.state[0][0] = data[4] / 255 * 100;
+    wc.state[0][1] = data[5] / 255 * 100;
+    wc.state[0][2] = data[6] / 255 * 100;
+    wc.state[0][3] = data[7] / 255 * 100;
+    
+    // MOTION
+    wc.state[1][2] = data[10] > 50 ? 100 : 0;
+    if (wc.state[1][2] > 66) {
+        wc.state[1][0] = data[20] / 255 * 100;
+        wc.state[1][1] = data[21] / 255 * 100;
+    } else {
+        wc.state[1][0] = data[8] / 255 * 100;
+        wc.state[1][1] = data[9] / 255 * 100;
+    }
+    wc.state[1][3] = data[11] / 255 * 100;
+    
+    // MOD/RAND
+    wc.state[2][0] = data[12] / 255 * 100;
+    wc.state[2][1] = data[13] / 255 * 100;
+    wc.state[2][2] = data[14] > 50 ? 100 : 0;
+    wc.state[2][3] = data[15] / 255 * 100;
+    
+    // SPACE
+    wc.state[3][0] = data[16] / 255 * 100;
+    wc.state[3][1] = data[17] / 255 * 100;
+    wc.state[3][2] = data[18] / 255 * 100;
+    wc.state[3][3] = data[19] / 255 * 100;
+    
+    // SEQUENCE
+    wc.state[4][0] = data[22] / 255 * 100;
+    wc.state[4][1] = data[23] / 255 * 100;
+    wc.state[4][2] = data[24] / 255 * 100;
+    wc.state[4][3] = data[25] / 255 * 100;
+
+    const panel = $('sim-easel-panel');
+    if (panel) {
+        panel.querySelectorAll('[data-easel-engine]').forEach(b => {
+            b.setAttribute('aria-pressed', String(Number(b.dataset.easelEngine) === wc.engine));
+        });
+        panel.querySelectorAll('.easel-knob').forEach(el => {
+            updateKnobUI(el, wc.page, Number(el.dataset.easelKnob));
+        });
+    }
+  }
+
+  window.addEventListener('fm1-preset-loaded', () => {
+      if (wc.visible) syncFromEngine();
+  });
 
   async function main() {
     const btn = addEaselButton();
