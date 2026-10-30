@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
-/* Easel-1 Core DSP Engine - Puro Sintetizador West Coast */
+/* Easel-1 Core DSP Engine - 4 Synthesis Engines */
 #include <math.h>
 #include <string.h>
 #include <stdint.h>
@@ -26,7 +26,8 @@ typedef struct {
 static easel_voice_t voices[8];
 
 // Parâmetros Globais
-static float p_shape = 0.0f;
+static float p_engine_mode = 0.0f; // 0=Classic, 1=FM, 2=Ring, 3=Phase
+static float p_shape = 0.0f;       // Morph / FM Index / Ring Depth / PD Amount
 static float p_fold = 0.2f;
 static float p_decay = 0.5f;
 static float p_lpg = 0.5f;
@@ -49,11 +50,10 @@ static float p_pitch_decay = 0.2f;
 static float p_reverb_mix = 0.3f;
 static float p_reverb_time = 0.5f;
 
-// Sequenciador Global Modifiers (SEQUENCE)
-static float p_seq_transpose = 0.5f; // -12 a +12
-static float p_seq_octave = 0.5f;    // -2 a +2
-static float p_seq_timbre = 0.5f;    // Modulação global do Fold
-static float p_seq_lpg_offset = 0.5f;// Modulação global do LPG
+static float p_seq_transpose = 0.5f;
+static float p_seq_octave = 0.5f;
+static float p_seq_timbre = 0.5f;
+static float p_seq_lpg_offset = 0.5f;
 
 // Estados
 static float fg_phase = 0.0f;
@@ -79,25 +79,52 @@ static float get_random() {
     return ((float)rand_seed / 1073741824.0f) - 1.0f;
 }
 
-static float osc_morph(float phase, float shape) {
+// --- MOTORES DE SÍNTESE ---
+static float synth_core(float phase, float shape, float engine) {
     float sine = sinf(phase * 6.2831853f);
-    float tri = 2.0f * fabsf(2.0f * (phase - floorf(phase + 0.5f))) - 1.0f;
-    float saw = 2.0f * phase - 1.0f;
-    float square = (phase < 0.5f) ? 1.0f : -1.0f;
     
-    if (shape < 0.33f) {
-        float t = shape * 3.0f;
-        return sine * (1.0f - t) + tri * t;
-    } else if (shape < 0.66f) {
-        float t = (shape - 0.33f) * 3.0f;
-        return tri * (1.0f - t) + saw * t;
+    if (engine < 0.5f) {
+        // 0. CLASSIC (Morphing)
+        float tri = 2.0f * fabsf(2.0f * (phase - floorf(phase + 0.5f))) - 1.0f;
+        float saw = 2.0f * phase - 1.0f;
+        float square = (phase < 0.5f) ? 1.0f : -1.0f;
+        
+        if (shape < 0.33f) {
+            float t = shape * 3.0f;
+            return sine * (1.0f - t) + tri * t;
+        } else if (shape < 0.66f) {
+            float t = (shape - 0.33f) * 3.0f;
+            return tri * (1.0f - t) + saw * t;
+        } else {
+            float t = (shape - 0.66f) * 3.0f;
+            return saw * (1.0f - t) + square * t;
+        }
+    } else if (engine < 1.5f) {
+        // 1. FM (2-Op)
+        float mod = sinf(phase * 6.2831853f * 2.0f); // Modulador (ratio 2.0)
+        float index = shape * 10.0f; // Profundidade da modulação
+        return sinf(phase * 6.2831853f + mod * index);
+    } else if (engine < 2.5f) {
+        // 2. RING MOD
+        float modulator = sinf(phase * 6.2831853f * 1.414f); // Inarmônico
+        float dry = sine;
+        float ring = sine * modulator;
+        return dry * (1.0f - shape) + ring * shape;
     } else {
-        float t = (shape - 0.66f) * 3.0f;
-        return saw * (1.0f - t) + square * t;
+        // 3. PHASE DISTORTION (CZ)
+        float dist = shape * 0.8f; // Distorção máxima de 80%
+        // Quebra a fase no meio do ciclo para criar harmônicos
+        float ph = phase;
+        if (ph < 0.5f) {
+            ph = ph * (1.0f + dist);
+        } else {
+            ph = 0.5f + (ph - 0.5f) * (1.0f - dist) + dist * 0.5f;
+        }
+        if (ph > 1.0f) ph -= 1.0f;
+        return sinf(ph * 6.2831853f);
     }
 }
 
-// Chamado pelo midi_router.c quando o sequenciador/teclado dispara uma nota
 void easel_note_on(uint8_t note, uint8_t vel) {
     if (!vel) return;
     
@@ -181,6 +208,7 @@ void easel_set_param(int param, float val) {
     if (param == 19) p_seq_octave = val;
     if (param == 20) p_seq_timbre = val;
     if (param == 21) p_seq_lpg_offset = val;
+    if (param == 22) p_engine_mode = val; // Engine Selector
 }
 
 void easel_mix(int32_t *out, unsigned frames) {
@@ -247,7 +275,6 @@ void easel_mix(int32_t *out, unsigned frames) {
         float mixed = 0.0f;
         int active_count = 0;
 
-        // Modificadores globais do Sequenciador
         float seq_global_fold = 1.0f + (p_seq_timbre * 1.5f);
         float seq_global_lpg = 100.0f + (p_seq_lpg_offset * 5000.0f);
 
@@ -268,7 +295,9 @@ void easel_mix(int32_t *out, unsigned frames) {
 
             voices[v].phase += (voices[v].freq * pitch_mod) / sample_rate;
             if (voices[v].phase >= 1.0f) voices[v].phase -= 1.0f;
-            float raw = osc_morph(voices[v].phase, p_shape);
+            
+            // Usa o motor selecionado
+            float raw = synth_core(voices[v].phase, p_shape, p_engine_mode);
             
             float fold_depth = (1.0f + p_fold * 4.0f) * fold_mod * seq_global_fold;
             float u = raw * fold_depth;
