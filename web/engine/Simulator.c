@@ -27,7 +27,7 @@ static unsigned gate, midi_read, midi_write, midi_reset;
 static uint8_t radio_features, radio_role;
 static struct { uint8_t data[3], count; } midi[MIDI_QUEUE];
 static int32_t previous[FM1_BLOCK_WORDS];
-static int32_t scratch_audio[FM1_BLOCK_WORDS]; // Buffer para o sequenciador do FM1
+static int32_t scratch_audio[FM1_BLOCK_WORDS]; 
 static float output[FM1_BLOCK_WORDS];
 static int16_t *sample_input;
 static uint8_t *sample_encoded;
@@ -42,6 +42,9 @@ extern unsigned groove_screen_preset_position(void);
 extern void easel_mix(int32_t *out, unsigned frames);
 extern void easel_note_on(uint8_t note, uint8_t vel);
 extern void easel_set_param(int param, float val);
+extern void easel_serialize(uint8_t *buf);
+extern void easel_deserialize(const uint8_t *buf);
+extern int groove_source_set(unsigned track, unsigned type);
 
 void fm1_web_pause(void) { ++gate; }
 void fm1_web_resume(void) { if (gate) --gate; }
@@ -236,6 +239,9 @@ EXPORT("sim_boot") void sim_boot(unsigned clear)
     if (!(clear & 2U)) groove_screen_open(0);
     fm1_web_control();
     while (groove_samples_status() == 1) groove_samples_poll();
+
+    uint8_t patch[156];
+    if (groove_fm_copy(7, patch, NULL) == 0) easel_deserialize(patch);
 }
 EXPORT("sim_control") void sim_control(unsigned kind, unsigned index, int value)
 {
@@ -282,6 +288,10 @@ EXPORT("sim_open") int sim_open(unsigned target)
 EXPORT("sim_preset") int sim_preset(unsigned slot)
 {
     int result = groove_screen_preset(slot);
+    if (!result) {
+        uint8_t patch[156];
+        if (groove_fm_copy(7, patch, NULL) == 0) easel_deserialize(patch);
+    }
     fm1_web_control();
     return result;
 }
@@ -357,10 +367,7 @@ EXPORT("sim_render") const float *sim_render(void)
         send(midi[midi_read].data, midi[midi_read].count); midi_read = (midi_read + 1) % MIDI_QUEUE;
     }
     
-    // 1. Roda a engine nativa em background. O relógio bate e o groove_midi_note é chamado.
     (void)fm1_engine_render(scratch_audio, FM1_BLOCK_FRAMES);
-    
-    // 2. Gera o áudio do Easel-1 (que recebeu as notas do passo 1)
     easel_mix(previous, FM1_BLOCK_FRAMES);
     
     for (unsigned i = 0; i < FM1_BLOCK_WORDS; ++i)
@@ -422,8 +429,20 @@ EXPORT("sim_sample_bank") int sim_sample_bank(unsigned bytes)
     while (groove_samples_status() == 1) groove_samples_poll();
     return groove_samples_status() == 2 ? 0 : -1;
 }
-EXPORT("sim_export") int sim_export(void) { return groove_project_export(file_buffer, sizeof file_buffer); }
-EXPORT("sim_import") int sim_import(unsigned bytes) { return groove_project_import(file_buffer, bytes); }
+EXPORT("sim_export") int sim_export(void) { 
+    uint8_t patch[156];
+    easel_serialize(patch);
+    groove_fm_import(7, patch);
+    return groove_project_export(file_buffer, sizeof file_buffer); 
+}
+EXPORT("sim_import") int sim_import(unsigned bytes) { 
+    int r = groove_project_import(file_buffer, bytes); 
+    if (!r) {
+        uint8_t patch[156];
+        if (groove_fm_copy(7, patch, NULL) == 0) easel_deserialize(patch);
+    }
+    return r;
+}
 EXPORT("sim_library_read") int sim_library_read(unsigned bank) { return groove_fm_library_read(bank,file_buffer); }
 EXPORT("sim_library_write") int sim_library_write(unsigned bank) { return groove_fm_library_write(bank,file_buffer); }
 EXPORT("sim_factory_name") const char *sim_factory_name(unsigned index) { return groove_factory_name(index); }
@@ -466,7 +485,6 @@ EXPORT("sim_midi_from") int sim_midi_from(unsigned source, unsigned bytes)
 }
 EXPORT("sim_midi") int sim_midi(unsigned bytes) { return sim_midi_from(FM1_MIDI_USB, bytes); }
 
-/* Exportações do Easel-1 para o JS */
 EXPORT("sim_easel_note") void web_easel_note(uint8_t note, uint8_t vel) { easel_note_on(note, vel); }
 EXPORT("sim_easel_param") void web_easel_param(int param, float val) { easel_set_param(param, val); }
 
