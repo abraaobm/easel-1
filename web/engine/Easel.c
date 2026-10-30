@@ -26,8 +26,8 @@ typedef struct {
 static easel_voice_t voices[8];
 
 // Parâmetros Globais
-static float p_engine_mode = 0.0f; // 0=Classic, 1=FM, 2=Ring, 3=Phase
-static float p_shape = 0.0f;       // Morph / FM Index / Ring Depth / PD Amount
+static float p_engine_mode = 0.0f; // 0=Classic, 0.33=FM, 0.66=Ring, 1.0=Phase
+static float p_shape = 0.0f;       
 static float p_fold = 0.2f;
 static float p_decay = 0.5f;
 static float p_lpg = 0.5f;
@@ -82,8 +82,10 @@ static float get_random() {
 // --- MOTORES DE SÍNTESE ---
 static float synth_core(float phase, float shape, float engine) {
     float sine = sinf(phase * 6.2831853f);
-    
-    if (engine < 0.5f) {
+    // Converte 0.0-1.0 em 0, 1, 2 ou 3
+    int mode = (int)(engine * 3.1f);
+
+    if (mode == 0) {
         // 0. CLASSIC (Morphing)
         float tri = 2.0f * fabsf(2.0f * (phase - floorf(phase + 0.5f))) - 1.0f;
         float saw = 2.0f * phase - 1.0f;
@@ -99,22 +101,21 @@ static float synth_core(float phase, float shape, float engine) {
             float t = (shape - 0.66f) * 3.0f;
             return saw * (1.0f - t) + square * t;
         }
-    } else if (engine < 1.5f) {
+    } else if (mode == 1) {
         // 1. FM (2-Op)
-        float mod = sinf(phase * 6.2831853f * 2.0f); // Modulador (ratio 2.0)
-        float index = shape * 10.0f; // Profundidade da modulação
+        float mod = sinf(phase * 6.2831853f * 2.0f); // Modulador
+        float index = shape * 15.0f; // Mais agressivo
         return sinf(phase * 6.2831853f + mod * index);
-    } else if (engine < 2.5f) {
+    } else if (mode == 2) {
         // 2. RING MOD
         float modulator = sinf(phase * 6.2831853f * 1.414f); // Inarmônico
-        float dry = sine;
         float ring = sine * modulator;
-        return dry * (1.0f - shape) + ring * shape;
+        return sine * (1.0f - shape) + ring * shape; // Mix Seco/Ring
     } else {
         // 3. PHASE DISTORTION (CZ)
-        float dist = shape * 0.8f; // Distorção máxima de 80%
-        // Quebra a fase no meio do ciclo para criar harmônicos
+        float dist = shape * 0.9f; // Distorção profunda
         float ph = phase;
+        // Curva a fase (acelera a primeira metade, desacelera a segunda)
         if (ph < 0.5f) {
             ph = ph * (1.0f + dist);
         } else {
@@ -208,7 +209,7 @@ void easel_set_param(int param, float val) {
     if (param == 19) p_seq_octave = val;
     if (param == 20) p_seq_timbre = val;
     if (param == 21) p_seq_lpg_offset = val;
-    if (param == 22) p_engine_mode = val; // Engine Selector
+    if (param == 22) p_engine_mode = val; 
 }
 
 void easel_mix(int32_t *out, unsigned frames) {
@@ -296,7 +297,6 @@ void easel_mix(int32_t *out, unsigned frames) {
             voices[v].phase += (voices[v].freq * pitch_mod) / sample_rate;
             if (voices[v].phase >= 1.0f) voices[v].phase -= 1.0f;
             
-            // Usa o motor selecionado
             float raw = synth_core(voices[v].phase, p_shape, p_engine_mode);
             
             float fold_depth = (1.0f + p_fold * 4.0f) * fold_mod * seq_global_fold;
