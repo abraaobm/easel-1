@@ -688,7 +688,18 @@
       const dial=box.querySelector('.dial'),buttons=box.lastElementChild.querySelectorAll('button');dial.dataset.encoder=index;
       if(index<0){dial.id='sim-master';dial.setAttribute('role','slider');dial.setAttribute('aria-valuemin','0');dial.setAttribute('aria-valuemax','100');}
       let angle=0,lastY=0,moved=false;
-      const turn=delta=>{if(!ready)return;if(index<0)setVolume(Number($('sim-volume').value)+delta*2);else{angle+=delta*18;dial.style.setProperty('--angle',angle+'deg');control(2,index,delta);}};
+      const turn=delta=>{
+          if(!ready)return;
+          if(index<0)setVolume(Number($('sim-volume').value)+delta*2);
+          else{
+              angle+=delta*18;dial.style.setProperty('--angle',angle+'deg');
+              if (index === 1 && globalThis.FM1EaselIsOpen && globalThis.FM1EaselChangeEngine) {
+                  globalThis.FM1EaselChangeEngine(delta);
+              } else {
+                  control(2,index,delta);
+              }
+          }
+      };
       buttons[0].onclick=()=>turn(-1);buttons[1].onclick=()=>turn(1);
       dial.addEventListener('wheel',event=>{if(dial.disabled||!event.deltaY||event.ctrlKey||event.metaKey||Math.abs(event.deltaX)>Math.abs(event.deltaY))return;event.preventDefault();turn(event.deltaY<0?1:-1);},{passive:false});
       dial.addEventListener('pointerdown',event=>{if(dial.disabled||event.button!==0)return;event.preventDefault();lastY=event.clientY;moved=false;dial.setPointerCapture(event.pointerId);});
