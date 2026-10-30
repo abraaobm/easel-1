@@ -47,6 +47,7 @@
           case 'easel_page':     data=c.sim_easel_page(message.track); break;
           case 'easel_note':    c.sim_easel_note(message.note, message.vel); break;
           case 'easel_param':   c.sim_easel_param(message.param, message.val); break;
+
           case 'open': result=c.sim_open(message.page); if(result)throw Error('当前音源不支持此编辑页。'); break;
           case 'preset': result=c.sim_preset(message.index); break;
           case 'step': result=c.sim_step(message.index,message.toggle?1:0); break;
@@ -360,6 +361,9 @@
     const oldWorkspace=workspace;
     if(message.workspace){
       workspace=message.workspace;
+      if(!oldWorkspace||workspace.revision!==oldWorkspace.revision) {
+          window.dispatchEvent(new Event('fm1-preset-loaded'));
+      }
       if(!oldWorkspace||workspace.name!==oldWorkspace.name)$('sim-current-project').textContent=workspace.name||'UNTITLED';
       if(!oldWorkspace||workspace.dirty!==oldWorkspace.dirty)FM1I18n.text($('sim-project-note'),workspace.dirty?'工作区有修改':'工作区未修改');
       if(!oldWorkspace||workspace.slot!==oldWorkspace.slot||workspace.factory!==oldWorkspace.factory)$('sim-factory').value=workspace.factory?String(workspace.slot):'';
@@ -851,6 +855,14 @@
   globalThis.FM1Easel = {
     note:    (note, vel) => dispatch({ type: 'easel_note', note, vel }),
     setParam: (param, val) => dispatch({ type: 'easel_param', param, val }),
+    getState: () => {
+        if (preview) {
+            const ptr = preview.c.sim_easel_get_state();
+            return new Uint8Array(preview.c.memory.buffer, ptr, 156).slice();
+        }
+        return null;
+    },
+    getRevision: () => workspace ? workspace.revision : 0
   };
 
   availability();boot();
