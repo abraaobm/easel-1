@@ -693,7 +693,7 @@
           if(index<0)setVolume(Number($('sim-volume').value)+delta*2);
           else{
               angle+=delta*18;dial.style.setProperty('--angle',angle+'deg');
-              if (index === 1 && globalThis.FM1EaselIsOpen && globalThis.FM1EaselChangeEngine) {
+              if (index === 1 && globalThis.FM1EaselIsOpen && globalThis.FM1EaselChangeEngine && !(state && state[1] === 19)) {
                   globalThis.FM1EaselChangeEngine(delta);
               } else {
                   control(2,index,delta);
@@ -873,7 +873,9 @@
         }
         return null;
     },
-    getRevision: () => workspace ? workspace.revision : 0
+    getRevision: () => workspace ? workspace.revision : 0,
+    open: () => request('open', { page: 19 }),
+    close: () => request('open', { page: 0 })
   };
 
   availability();boot();
