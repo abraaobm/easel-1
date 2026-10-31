@@ -115,7 +115,7 @@ void easel_deserialize(const uint8_t *buf) {
     p_lpg = buf[7] / 255.0f;
     p_rise = buf[8] / 255.0f;
     p_fall = buf[9] / 255.0f;
-    p_loop = (int)(buf[10] / 50.0f);
+    p_loop = (int)((buf[10] + 63U) / 127U);
     if (p_loop > 2) p_loop = 2;
     p_pulse_width = buf[11] / 255.0f;
     p_rand_rate = buf[12] / 255.0f;
@@ -167,6 +167,80 @@ static float synth_core(float phase, float shape, float engine) {
         else ph = 0.5f + (ph - 0.5f) * (1.0f - dist) + dist * 0.5f;
         if (ph > 1.0f) ph -= 1.0f;
         return sinf(ph * 6.2831853f);
+    }
+}
+
+/* One wavefolder shared by the DSP and the LCD scope. */
+static float wavefold(float u) {
+    if (u > 1.0f || u < -1.0f) {
+        u = fmodf(u + 1.0f, 4.0f);
+        if (u < 0) u += 4.0f;
+        u = (u > 2.0f) ? 4.0f - u : u;
+        u -= 1.0f;
+    }
+    return u;
+}
+
+/* ---- Read-only access for the LCD panel (app/screen.c) ---- */
+float easel_get_param(int param) {
+    switch (param) {
+    case 0: return p_shape;
+    case 1: return p_fold;
+    case 2: return p_decay;
+    case 3: return p_lpg;
+    case 4: return p_rise;
+    case 5: return p_fall;
+    case 6: return (float)p_loop * 0.5f;
+    case 7: return p_pulse_width;
+    case 8: return p_rand_rate;
+    case 9: return p_rand_amt;
+    case 10: return p_rand_target;
+    case 11: return p_rand_smooth;
+    case 12: return p_pitch_amt;
+    case 13: return p_pitch_decay;
+    case 14: return p_reverb_mix;
+    case 15: return p_reverb_time;
+    case 16: return p_euclid_rate;
+    case 17: return p_euclid_pulses;
+    case 18: return p_seq_transpose;
+    case 19: return p_seq_octave;
+    case 20: return p_seq_timbre;
+    case 21: return p_seq_lpg_offset;
+    case 22: return p_engine_mode;
+    default: return 0.0f;
+    }
+}
+
+/* viz: 0 function phase (0..2), 1 function out, 2 function running,
+ * 3 random S&H value, 4 random out, 5 loudest voice envelope,
+ * 6 euclid step, 7 active voices. */
+void easel_ui_snapshot(float viz[8]) {
+    float peak = 0.0f;
+    int active = 0;
+    for (int i = 0; i < 8; i++) {
+        if (!voices[i].active) continue;
+        active++;
+        if (voices[i].env > peak) peak = voices[i].env;
+    }
+    viz[0] = fg_phase;
+    viz[1] = fg_out;
+    viz[2] = fg_running ? 1.0f : 0.0f;
+    viz[3] = rand_current;
+    viz[4] = rand_out;
+    viz[5] = peak;
+    viz[6] = (float)euclid_step;
+    viz[7] = (float)active;
+}
+
+/* Static preview of the voice: oscillator + wavefolder with the current knobs. */
+void easel_ui_scope(int8_t *out, unsigned count, float cycles) {
+    float depth = (1.0f + p_fold * 4.0f) * (1.0f + p_seq_timbre * 1.5f);
+    for (unsigned i = 0; i < count; i++) {
+        float phase = fmodf(cycles * (float)i / (float)count, 1.0f);
+        float u = wavefold(synth_core(phase, p_shape, p_engine_mode) * depth);
+        if (u > 1.0f) u = 1.0f;
+        if (u < -1.0f) u = -1.0f;
+        out[i] = (int8_t)(u * 127.0f);
     }
 }
 
@@ -348,14 +422,7 @@ void easel_mix(int32_t *out, unsigned frames) {
             float raw = synth_core(voices[v].phase, p_shape, p_engine_mode);
             
             float fold_depth = (1.0f + p_fold * 4.0f) * fold_mod * seq_global_fold;
-            float u = raw * fold_depth;
-            if (u > 1.0f || u < -1.0f) {
-                u = fmodf(u + 1.0f, 4.0f);
-                if (u < 0) u += 4.0f;
-                u = (u > 2.0f) ? 4.0f - u : u;
-                u -= 1.0f;
-            }
-            float folded = u;
+            float folded = wavefold(raw * fold_depth);
 
             float envelope_out;
             if (voices[v].hold_timer > 0.0f) {
