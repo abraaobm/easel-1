@@ -4,6 +4,9 @@
 #include "version.h"
 #include "fm1_engine_control.h"
 #include <string.h>
+#ifdef FM1_OPEN_WEB
+#include <math.h>
+#endif
 enum {
     BACK = 0x0000,
     PANEL = 0x18e3,
@@ -123,7 +126,7 @@ static void text(unsigned x, unsigned y, const char *s, unsigned scale, uint16_t
 }
 /* Eight tracks stay visible on HOME. SEQ maps the sixteen white keys to one
  * quarter of the 64-step pattern. All drawing and edits run on app_control. */
-enum { OVERVIEW, STEPS, FM_EDIT, FM_ENV, FM_LFO, TONE_EDIT, MIX, BLE, PROJECT, NAME, EFFECTS, SOURCE, ACTIONS, STEP_EDIT, RHYTHM, FM_QUICK, PRESET_BROWSER, ARP_EDIT, STARTUP };
+enum { OVERVIEW, STEPS, FM_EDIT, FM_ENV, FM_LFO, TONE_EDIT, MIX, BLE, PROJECT, NAME, EFFECTS, SOURCE, ACTIONS, STEP_EDIT, RHYTHM, FM_QUICK, PRESET_BROWSER, ARP_EDIT, STARTUP, WC_EDIT };
 enum { OCT_DOWN, OCT_UP, FX, SCL, ENV, LFO, EDIT, GLO, HOME, SAVE, ARP, SEQ, PLAY, REC };
 #define BUTTON(b) (1U << (b))
 static const uint16_t colors[8] = {0x3c9f, 0x07bf, 0x4eae, 0x06d4, 0xac9f, 0xed18, 0xff06, 0xfba5};
@@ -1352,6 +1355,355 @@ static __attribute__((noinline, cold, minsize)) void boot_draw(void)
         paint_fill(58 + 16 * i, 166 - height[i] / 2, 12, height[i],
                    i < boot_phase ? colors[i] : PANEL);
 }
+#ifdef FM1_OPEN_WEB
+/* ---- Easel-1 front panel ------------------------------------------------
+ * Five Buchla-style pages drawn with the same bounded primitives as every
+ * other LCD page. The panel reads one snapshot of the Easel engine per frame
+ * (wc_snapshot) so the marking pass and every band pass draw identical data.
+ * ALGORITHM selects the page, K1-K4 edit it and PRESETS selects the engine. */
+extern float easel_get_param(int param);
+extern void easel_set_param(int param, float value);
+extern void easel_ui_snapshot(float viz[8]);
+extern void easel_ui_scope(int8_t *out, unsigned count, float cycles);
+enum {
+    WC_BG = 0xbdf7, WC_LIGHT = 0xdefb, WC_GRID = 0xa534, WC_DARK = 0x8410, WC_INK = 0x0000,
+    WC_BLUE = 0x03bf, WC_ORANGE = 0xfc60, WC_YELLOW = 0xffe0, WC_RED = 0xf800,
+    WC_PURPLE = 0x8010, WC_GREEN = 0x0600, WC_WHITE = 0xffff, WC_NOTE = 0x4208
+};
+enum { WC_PAGES = 5, WC_PARAMS = 23, WC_SCOPE = 224, WC_HIST = 8 };
+static unsigned wc_page;
+static struct {
+    uint8_t pct[WC_PARAMS];
+    uint8_t loop, engine;
+    float viz[8];
+    int8_t scope[WC_SCOPE];
+} wc_frame;
+static int8_t wc_hist[WC_HIST];
+static float wc_last_random = 2.0f;
+static const char *const wc_names[WC_PAGES] = {"VOICE", "MOTION", "MOD/RAND", "SPACE", "SEQUENCE"};
+static const char *const wc_engines[4] = {"CLASSIC", "FM", "RING", "PHASE"};
+static const uint16_t wc_accents[WC_PAGES] = {WC_BLUE, WC_ORANGE, WC_PURPLE, WC_GREEN, WC_RED};
+
+static unsigned wc_read(unsigned index)
+{
+    return (unsigned)clamp((int)(easel_get_param((int)index) * 100.0f + 0.5f), 0, 100);
+}
+static void wc_snapshot(void)
+{
+    for (unsigned i = 0; i < WC_PARAMS; ++i) wc_frame.pct[i] = (uint8_t)wc_read(i);
+    wc_frame.loop = (uint8_t)((wc_frame.pct[6] + 25U) / 50U);
+    unsigned engine = (unsigned)(easel_get_param(22) * 3.1f);
+    wc_frame.engine = (uint8_t)(engine > 3U ? 3U : engine);
+    easel_ui_snapshot(wc_frame.viz);
+    if (wc_frame.viz[3] != wc_last_random) {
+        wc_last_random = wc_frame.viz[3];
+        memmove(wc_hist, wc_hist + 1, WC_HIST - 1);
+        wc_hist[WC_HIST - 1] = (int8_t)(wc_last_random * 127.0f);
+    }
+    if (wc_page == 0) easel_ui_scope(wc_frame.scope, WC_SCOPE, 2.5f);
+}
+/* Parameter slot behind each of the sixteen+four knobs. */
+static unsigned wc_param_index(unsigned knob)
+{
+    if (wc_page == 4) return 18 + knob;
+    if (wc_page == 1 && wc_read(6) >= 75U && knob < 2) return 16 + knob;
+    return wc_page * 4 + knob;
+}
+static void wc_edit(unsigned knob, int delta)
+{
+    unsigned index = wc_param_index(knob), pct = wc_read(index);
+    int sign = delta > 0 ? 1 : -1;
+    if (index == 6) {
+        int mode = clamp((int)((pct + 25U) / 50U) + sign, 0, 2);
+        easel_set_param(6, (float)mode * 0.5f);
+    } else if (index == 10) {
+        easel_set_param(10, sign > 0 ? 1.0f : 0.0f);
+    } else if (index == 18) {
+        int semis = clamp(((int)pct - 50) * 24 / 100 + delta, -12, 12);
+        float bias = semis > 0 ? 0.2f : semis < 0 ? -0.2f : 0.0f;
+        float value = 0.5f + ((float)semis + bias) / 24.0f;
+        easel_set_param(18, value < 0.0f ? 0.0f : value > 1.0f ? 1.0f : value);
+    } else if (index == 19) {
+        int octaves = clamp(((int)pct - 50) * 4 / 100 + sign, -2, 2);
+        easel_set_param(19, 0.5f + (float)octaves * 0.25f);
+    } else {
+        easel_set_param((int)index, (float)clamp((int)pct + delta, 0, 100) / 100.0f);
+    }
+}
+static void wc_control(const int16_t encoders[7])
+{
+    if (encoders[1]) wc_page = (unsigned)clamp((int)wc_page + encoders[1], 0, WC_PAGES - 1);
+    if (encoders[6]) {
+        unsigned engine = (unsigned)(easel_get_param(22) * 3.1f);
+        int next = clamp((int)(engine > 3U ? 3U : engine) + encoders[6], 0, 3);
+        easel_set_param(22, (float)next / 3.0f);
+    }
+    for (unsigned i = 0; i < 4; ++i)
+        if (encoders[2 + i]) wc_edit(i, fm_encoder_delta(2 + i, encoders[2 + i]));
+}
+static void wc_signed(char out[12], int value)
+{
+    if (value > 0) { out[0] = '+'; decimal(out + 1, value, 1); }
+    else decimal(out, value, 1);
+}
+static void wc_knob_info(unsigned knob, const char **label, char value[12], unsigned *fill)
+{
+    static const char *const labels[WC_PAGES][4] = {
+        {"SHAPE", "FOLD", "DECAY", "LPG CUT"}, {"RISE", "FALL", "LOOP", "PULSE W"},
+        {"RATE", "AMOUNT", "TARGET", "SMOOTH"}, {"P. AMT", "P. DEC", "REV MIX", "REV TIME"},
+        {"TRANSP", "OCTAVE", "G. FOLD", "G. LPG"}};
+    static const char *const shapes[4] = {"SHAPE", "FM IDX", "RING DEP", "PD AMT"};
+    static const char *const loops[3] = {"OFF", "LFO", "EUC"};
+    unsigned euclid = wc_page == 1 && wc_frame.loop == 2 && knob < 2;
+    unsigned index = wc_page == 4 ? 18 + knob : euclid ? 16 + knob : wc_page * 4 + knob;
+    unsigned pct = wc_frame.pct[index];
+    *label = labels[wc_page][knob];
+    if (wc_page == 0 && knob == 0) *label = shapes[wc_frame.engine];
+    if (euclid) *label = knob ? "PULSES" : "CLK RATE";
+    *fill = pct;
+    value[0] = 0;
+    if (index == 6) {
+        strcpy(value, loops[wc_frame.loop]);
+        *fill = wc_frame.loop * 50U;
+    } else if (index == 10) {
+        strcpy(value, pct > 50U ? "PITCH" : "TIMBRE");
+        *fill = pct > 50U ? 100U : 0U;
+    } else if (index == 17 && euclid) {
+        decimal(value, (int)(1U + pct * 15U / 100U), 1);
+    } else if (index == 18) {
+        wc_signed(value, ((int)pct - 50) * 24 / 100);
+    } else if (index == 19) {
+        wc_signed(value, ((int)pct - 50) * 4 / 100);
+    } else {
+        decimal(value, (int)pct, 1);
+    }
+}
+static void wc_knob(unsigned col, const char *label, const char *value, unsigned fill, uint16_t color)
+{
+#ifdef FM1_HOST_TEST
+    if (col < 4) {
+        memset(web_knobs[col], 0, sizeof web_knobs[col]);
+        unsigned n = (unsigned)strlen(label); if (n > 15) n = 15;
+        memcpy(web_knobs[col][0], label, n);
+        n = (unsigned)strlen(value); if (n > 15) n = 15;
+        memcpy(web_knobs[col][1], value, n);
+    }
+#endif
+    if (paint_rendering && (paint_top >= 227 || paint_top + PAINT_ROWS <= 195)) return;
+    uint32_t sig = signature(signature(color + (fill << 16), label, (unsigned)strlen(label)),
+                             value, (unsigned)strlen(value));
+    if (cache->foot_cache[col] == sig) return;
+    cache->foot_cache[col] = sig;
+    unsigned x = 6 + 59 * col, big = strlen(value) <= 4;
+    paint_fill(x, 195, 54, 33, WC_BG);
+    paint_fill(x, 195, 54, 3, color);
+    text(x, 200, label, 1, WC_INK, WC_BG);
+    text(x, big ? 209 : 213, value, big ? 2 : 1, WC_INK, WC_BG);
+    paint_fill(x, 225, 54, 3, WC_DARK);
+    paint_fill(x, 225, 54 * fill / 100, 3, color);
+}
+static void wc_thick(int x0, int y0, int x1, int y1, uint16_t color)
+{
+    line(x0, y0, x1, y1, color);
+    line(x0, y0 + 1, x1, y1 + 1, color);
+}
+static void wc_strip(const char *s)
+{
+    paint_fill(6, 184, 228, 9, WC_BG);
+    text(8, 185, s, 1, WC_INK, WC_BG);
+}
+static void wc_tag(unsigned x, unsigned y, const char *s, uint16_t color)
+{
+    paint_fill(x, y, 6U * (unsigned)strlen(s) + 4U, 11, color);
+    text(x + 2, y + 2, s, 1, WC_WHITE, color);
+}
+static void wc_draw_voice(void)
+{
+    for (unsigned i = 1; i < 4; ++i) paint_fill(8 + i * 56, 34, 1, 146, WC_GRID);
+    paint_fill(8, 107, 224, 1, WC_DARK);
+    int previous = 107 - wc_frame.scope[0] * 64 / 127;
+    for (unsigned x = 1; x < WC_SCOPE; ++x) {
+        int y = 107 - wc_frame.scope[x] * 64 / 127;
+        wc_thick((int)(7 + x), previous, (int)(8 + x), y, WC_BLUE);
+        previous = y;
+    }
+    wc_tag(10, 37, wc_engines[wc_frame.engine], WC_BLUE);
+    wc_strip("COMPLEX OSC + WAVEFOLDER");
+}
+static void wc_draw_motion(void)
+{
+    for (unsigned i = 0; i < 3; ++i) paint_fill(8, 48 + i * 60, 224, 1, WC_GRID);
+    for (unsigned i = 1; i < 6; ++i) paint_fill(8 + i * 37, 34, 1, 146, WC_GRID);
+    if (wc_frame.loop == 2) {
+        uint8_t trigger[16] = {0};
+        unsigned pulses = 1U + wc_frame.pct[17] * 15U / 100U, bucket = 0, current = (unsigned)wc_frame.viz[6] % 16U;
+        for (unsigned n = 1; n <= 16; ++n) {
+            bucket += pulses;
+            if (bucket >= 16U) { bucket -= 16U; trigger[n % 16U] = 1; }
+        }
+        for (unsigned i = 0; i < 16; ++i) {
+            unsigned x = 10 + i * 14, h = trigger[i] ? 90 : 10;
+            paint_fill(x, 160 - h, 10, h, trigger[i] ? WC_ORANGE : WC_DARK);
+            if (trigger[i]) frame(x, 160 - h, 10, h, WC_INK);
+            if (i == current) paint_fill(x, 164, 10, 5, WC_RED);
+        }
+        wc_tag(10, 37, "EUCLID", WC_ORANGE);
+        wc_strip("EUCLIDEAN FUNCTION PULSER");
+        return;
+    }
+    float rise = 0.01f + (float)wc_frame.pct[4] * 0.02f, fall = 0.01f + (float)wc_frame.pct[5] * 0.02f;
+    float hold = (float)wc_frame.pct[7] * 0.015f, scale = 190.0f / (rise + hold + fall);
+    int rw = (int)(rise * scale), hw = (int)(hold * scale), fw = (int)(fall * scale), x0 = 20;
+    if (rw < 2) rw = 2;
+    if (fw < 2) fw = 2;
+    wc_thick(x0, 168, x0 + rw, 48, WC_ORANGE);
+    if (hw) wc_thick(x0 + rw, 48, x0 + rw + hw, 48, WC_BLUE);
+    wc_thick(x0 + rw + hw, 48, x0 + rw + hw + fw, 168, WC_ORANGE);
+    if (wc_frame.viz[2] > 0.5f) {
+        float phase = wc_frame.viz[0];
+        int px = phase < 1.0f ? x0 + (int)(phase * (float)rw) : x0 + rw + hw + (int)((phase - 1.0f) * (float)fw);
+        paint_fill((unsigned)px, 40, 2, 134, WC_RED);
+    }
+    wc_tag(10, 37, wc_frame.loop ? "LOOP" : "ONCE", WC_ORANGE);
+    wc_strip("RISE / FALL FUNCTION  PW HOLD");
+}
+static void wc_draw_mod(void)
+{
+    paint_fill(8, 106, 224, 1, WC_GRID);
+    int px = 0, py = 0;
+    for (unsigned i = 0; i < WC_HIST; ++i) {
+        int cx = 22 + (int)i * 28, y = 106 - wc_hist[i] * 50 / 127;
+        paint_fill((unsigned)cx - 1, 52, 3, 108, WC_INK);
+        if (i && wc_frame.pct[11] > 10U) wc_thick(px, py, cx, y, WC_PURPLE);
+        px = cx; py = y;
+    }
+    for (unsigned i = 0; i < WC_HIST; ++i) {
+        unsigned cx = 22 + i * 28;
+        int y = 106 - wc_hist[i] * 50 / 127;
+        paint_fill(cx - 9, (unsigned)y - 4, 19, 9, i == WC_HIST - 1 ? WC_GREEN : WC_PURPLE);
+        frame(cx - 9, (unsigned)y - 4, 19, 9, WC_INK);
+    }
+    wc_tag(10, 37, wc_frame.pct[10] > 50U ? "TARGET PITCH" : "TARGET TIMBRE", WC_PURPLE);
+    wc_strip("SOURCE OF UNCERTAINTY");
+}
+static void wc_draw_space(void)
+{
+    float tau = 0.01f + (float)wc_frame.pct[13] * 0.005f, height = (float)wc_frame.pct[12] * 1.1f;
+    int previous = 168 - (int)height;
+    for (unsigned i = 1; i < 25; ++i) {
+        int x = 14 + (int)i * 4, y = 168 - (int)(height * expf(-((float)i * 0.025f) / tau));
+        wc_thick(x - 4, previous, x, y, WC_ORANGE);
+        previous = y;
+    }
+    paint_fill(8, 168, 100, 1, WC_DARK);
+    paint_fill(112, 34, 1, 146, WC_DARK);
+    unsigned rings = 1U + wc_frame.pct[14] * 6U / 100U, spacing = 4U + wc_frame.pct[15] / 33U;
+    for (unsigned k = 0; k < rings; ++k) {
+        float radius = (float)(8U + k * spacing);
+        int lx = 172 + (int)radius, ly = 107;
+        for (unsigned a = 1; a <= 24; ++a) {
+            float angle = (float)a * 0.2617994f;
+            int x = 172 + (int)(radius * cosf(angle)), y = 107 + (int)(radius * sinf(angle));
+            line(lx, ly, x, y, WC_BLUE);
+            lx = x; ly = y;
+        }
+    }
+    paint_fill(170, 105, 5, 5, WC_GREEN);
+    wc_tag(10, 37, "PITCH ENV", WC_ORANGE);
+    wc_tag(122, 37, "SPRING REV", WC_BLUE);
+    wc_strip("PITCH ENVELOPE + SPRING TANK");
+}
+static void wc_draw_seq(void)
+{
+    const struct groove_view *v = &frame_views[track];
+    unsigned first = step_first(v);
+    for (unsigned i = 0; i < 16; ++i) {
+        unsigned step = first + i, x = 8 + (i % 4U) * 56U, y = 35 + (i / 4U) * 36U;
+        unsigned on = step < 64U && ((v->active_steps >> step) & 1U), inside = step < v->sequence_length;
+        paint_fill(x, y, 52, 32, !inside ? WC_BG : on ? WC_ORANGE : WC_LIGHT);
+        frame(x, y, 52, 32, WC_INK);
+        if (v->playing && v->play_step == step) {
+            frame(x + 1, y + 1, 50, 30, WC_RED);
+            frame(x + 2, y + 2, 48, 28, WC_RED);
+        }
+        number(x + 5, y + 5, (int)step + 1, 2, 1, WC_INK, !inside ? WC_BG : on ? WC_ORANGE : WC_LIGHT);
+    }
+    char status[40] = "STEP ", digits[12];
+    decimal(digits, (int)v->play_step + 1, 1); strcat(status, digits);
+    strcat(status, "  BPM "); decimal(digits, (int)v->tempo, 1); strcat(status, digits);
+    strcat(status, v->playing ? "  PLAY" : "  STOP");
+    wc_strip(status);
+}
+static void wc_graph(void)
+{
+    if (paint_rendering && (paint_top >= 192 || paint_top + PAINT_ROWS <= 30)) return;
+    uint32_t key[10] = {0};
+    const struct groove_view *v = &frame_views[track];
+    switch (wc_page) {
+    case 0:
+        key[0] = wc_frame.pct[0] | (wc_frame.pct[1] << 8) | ((uint32_t)wc_frame.pct[20] << 16) | ((uint32_t)wc_frame.engine << 24);
+        break;
+    case 1:
+        key[0] = wc_frame.pct[4] | (wc_frame.pct[5] << 8) | ((uint32_t)wc_frame.pct[7] << 16) | ((uint32_t)wc_frame.loop << 24);
+        key[1] = wc_frame.pct[17] | ((uint32_t)(wc_frame.viz[2] > 0.5f) << 8) | ((uint32_t)(wc_frame.viz[0] * 32.0f) << 16);
+        key[2] = (uint32_t)wc_frame.viz[6];
+        break;
+    case 2:
+        for (unsigned i = 0; i < WC_HIST; ++i) ((uint8_t *)key)[i] = (uint8_t)wc_hist[i];
+        key[2] = wc_frame.pct[10] | (wc_frame.pct[11] > 10U ? 256U : 0U);
+        break;
+    case 3:
+        key[0] = wc_frame.pct[12] | (wc_frame.pct[13] << 8) | ((uint32_t)wc_frame.pct[14] << 16) | ((uint32_t)wc_frame.pct[15] << 24);
+        break;
+    default:
+        key[0] = (uint32_t)v->active_steps; key[1] = (uint32_t)(v->active_steps >> 32);
+        key[2] = v->play_step | ((uint32_t)v->playing << 8) | (v->sequence_length << 16);
+        key[3] = step_first(v) | ((uint32_t)v->tempo << 8);
+        break;
+    }
+    uint32_t sig = signature(0x57u + wc_page, key, sizeof key);
+    if (sig == cache->middle_cache) return;
+    cache->middle_cache = sig;
+    paint_fill(6, 32, 228, 150, WC_INK);
+    paint_fill(7, 33, 226, 148, WC_LIGHT);
+    if (wc_page == 0) wc_draw_voice();
+    else if (wc_page == 1) wc_draw_motion();
+    else if (wc_page == 2) wc_draw_mod();
+    else if (wc_page == 3) wc_draw_space();
+    else wc_draw_seq();
+}
+static void wc_draw_page(void)
+{
+    if (cache->title_cache != 0x57c0U) { cache->title_cache = 0x57c0U; paint_fill(0, 0, 240, 240, WC_BG); }
+    if (!(paint_rendering && paint_top >= 30)) {
+        uint32_t sig = 0x4000U | wc_page;
+        if (sig != cache->header_cache) {
+            cache->header_cache = sig;
+            uint16_t accent = wc_accents[wc_page];
+            const char *name = wc_names[wc_page];
+            unsigned w = 12U * (unsigned)strlen(name) + 8U;
+            char counter[4] = {(char)('1' + wc_page), '/', '5', 0};
+            paint_fill(0, 0, 240, 27, WC_BG);
+            text(8, 6, "EASEL-1", 2, WC_INK, WC_BG);
+            text(98, 10, counter, 1, WC_NOTE, WC_BG);
+            paint_fill(232 - w, 4, w, 20, accent);
+            text(236 - w, 7, name, 2, WC_WHITE, accent);
+            paint_fill(0, 27, 240, 2, WC_INK);
+        }
+    }
+    wc_graph();
+    for (unsigned col = 0; col < 4; ++col) {
+        const char *label; char value[12]; unsigned fill;
+        wc_knob_info(col, &label, value, &fill);
+        wc_knob(col, label, value, fill, wc_accents[wc_page]);
+    }
+    if (!(paint_rendering && paint_top + PAINT_ROWS <= 229) && cache->hint_cache != 0x4849U) {
+        cache->hint_cache = 0x4849U;
+        paint_fill(0, 229, 240, 11, WC_BG);
+        text(6, 231, "ALGO PAGE  PRESETS ENGINE  HOME BACK", 1, WC_NOTE, WC_BG);
+    }
+}
+#endif
 static void draw_page_body(const struct fm1_ble_status *ble)
 {
     unsigned visible = boot_active ? STARTUP : glo_down && glo_used ? MIX : page;
@@ -1371,6 +1723,12 @@ static void draw_page_body(const struct fm1_ble_status *ble)
     if (visible == STARTUP) { boot_draw(); return; }
     const struct groove_view *views = frame_views, *v = &views[track];
     if (!paint_rendering) leds(v, visible);
+#ifdef FM1_OPEN_WEB
+    if (visible == WC_EDIT) {
+        wc_draw_page();
+        return;
+    }
+#endif
     if (visible == PRESET_BROWSER) {
         preset_draw();
         return;
@@ -1634,6 +1992,9 @@ static void draw(const struct fm1_ble_status *ble)
     }
     memset(frame_patch, 0, sizeof frame_patch);
     memset(&frame_controls, 0, sizeof frame_controls);
+#ifdef FM1_OPEN_WEB
+    if (visible == WC_EDIT) wc_snapshot();
+#endif
     if (visible == TONE_EDIT || (visible == FM_ENV && groove_source_type(track) != GROOVE_DX7))
         groove_tone_copy(track, tone_part(), frame_patch);
     else if (visible == FM_LFO && groove_source_type(track) != GROOVE_DX7)
@@ -2250,6 +2611,12 @@ static int apply_controls(const struct fm1_controls *controls, uint32_t now,
                 (page == TONE_EDIT && !advanced_edit);
             select_track(tracks ? controls->encoders[0] : 0);
             {
+#ifdef FM1_OPEN_WEB
+                if (page == WC_EDIT) {
+                    wc_control(controls->encoders);
+                    goto controls_done;
+                }
+#endif
                 if (page == OVERVIEW && (controls->encoders[1] || controls->encoders[3])) {
                     /* Type and timbre are separate controls. Finish old note-offs
                      * before replacing the instance; held keys wait for release. */
@@ -2695,7 +3062,7 @@ unsigned groove_screen_preset_position(void)
 /* Web shortcuts enter the same editor and use the same parameter handlers. */
 int groove_screen_open(unsigned target)
 {
-    if (target > ARP_EDIT || target == PROJECT) return -1;
+    if ((target > ARP_EDIT && target != WC_EDIT) || target == PROJECT) return -1;
     boot_active = 0;
     unsigned quick = target == FM_QUICK;
     if (quick && groove_source_type(track) != GROOVE_DX7) target = TONE_EDIT;
@@ -2748,7 +3115,7 @@ unsigned groove_screen_web_mask(void)
     if (glo_down && glo_used) return 0;
     if (page == OVERVIEW || page == STEPS || page == MIX || page == FM_EDIT ||
         page == FM_ENV || page == FM_LFO || page == TONE_EDIT || page == EFFECTS ||
-        page == STEP_EDIT || page == RHYTHM || page == FM_QUICK || page == ARP_EDIT) {
+        page == STEP_EDIT || page == RHYTHM || page == FM_QUICK || page == ARP_EDIT || page == WC_EDIT) {
         for (unsigned i = 0; i < 4; ++i)
             if (web_knobs[i][0][0] && strcmp(web_knobs[i][0], "-") &&
                 web_knobs[i][1][0] && strcmp(web_knobs[i][1], "--")) mask |= 1U << i;
@@ -2786,7 +3153,7 @@ const void *groove_screen_web_targets(void)
     if (glo_down && glo_used) return web_targets;
     struct groove_view v; groove_get_view(track, cursor, &v);
     unsigned type = groove_source_type(track);
-    if (page != BLE && page != PROJECT && page != PRESET_BROWSER && !v.clock_mode)
+    if (page != BLE && page != PROJECT && page != PRESET_BROWSER && page != WC_EDIT && !v.clock_mode)
         web_target(6, 4, 65, 23, 1, 0, track, "BPM", v.tempo, NULL);
     if (page == OVERVIEW) {
         for (unsigned t = 0; t < 8; ++t) {
@@ -2797,6 +3164,8 @@ const void *groove_screen_web_targets(void)
     } else if (page == STEPS) {
         web_target(172, 31, 60, 17, 8, 0, track, "LOOP LENGTH", v.next_length, NULL);
         web_target(6, 181, 222, 12, 6, 1, track, "SEQ PAGE", seq_page + 1, seq_pages[seq_page]);
+    } else if (page == WC_EDIT) {
+        for (unsigned col = 0; col < 4; ++col) web_alias(6 + 59 * col, 195, 54, 33, col);
     } else if (page == ARP_EDIT) {
         web_target(6, 176, 222, 16, 6, 1, track, "ARP PAGE", arp_page + 1, arp_page ? "SWING / HOLD" : "NOTES");
     } else if (page == FM_EDIT || ((page == FM_ENV || page == FM_LFO) && type == GROOVE_DX7)) {
