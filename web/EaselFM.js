@@ -176,10 +176,10 @@
       el.querySelector('.easel-valbar > i').style.width = (idx * 50) + '%';
     } else {
       if (page === 4 && knobIdx === 0) {
-          let v = Math.round(val - 50);
+          let v = Math.trunc((val - 50) * 24 / 100);
           el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
       } else if (page === 4 && knobIdx === 1) {
-          let v = Math.round((val - 50) / 25);
+          let v = Math.trunc((val - 50) * 4 / 100);
           el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
       } else {
           el.querySelector('.easel-val').textContent = Math.round(val);
@@ -260,6 +260,12 @@
             if (current < 25) next = 50;
             else if (current < 75) next = 100;
             else next = 0;
+        } else if (wc.page === 4 && knobIdx === 0) {
+            const semis = Math.max(-12, Math.min(12, Math.trunc((current - 50) * 24 / 100) + d));
+            next = Math.max(0, Math.min(100, 50 + (semis + (semis > 0 ? 0.2 : semis < 0 ? -0.2 : 0)) * 100 / 24));
+        } else if (wc.page === 4 && knobIdx === 1) {
+            const oct = Math.max(-2, Math.min(2, Math.trunc((current - 50) * 4 / 100) + Math.sign(d)));
+            next = 50 + oct * 25;
         } else {
             next = Math.max(0, Math.min(100, current + d));
         }
@@ -323,6 +329,7 @@
           panel.hidden = true; 
           wc.visible = false;
           globalThis.FM1EaselIsOpen = false;
+          if (wc.api && wc.api.close) wc.api.close().catch(() => {});
       };
       $('easel-test').onclick = () => {
           if (globalThis.FM1Easel) globalThis.FM1Easel.note(60, 127);
@@ -341,16 +348,12 @@
         wireKnob(el, Number(el.dataset.easelKnob));
       });
       
-      for (let p = 0; p < PAGES.length; p++) {
-        for (let k = 0; k < 4; k++) {
-          if (globalThis.FM1Easel) {
-              let paramIdx = p === 4 ? 18 + k : p * 4 + k;
-              globalThis.FM1Easel.setParam(paramIdx, wc.state[p][k] / 100);
-          }
-        }
-      }
-      if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(22, 0);
+      setInterval(() => {
+        if (wc.visible && !panel.querySelector('.easel-knob.drag')) syncFromEngine();
+      }, 250);
     }
+    if (api.open) api.open().catch(() => {});
+    syncFromEngine();
     renderPage(wc.page);
   }
 
@@ -366,7 +369,7 @@
     wc.state[0][2] = data[6] / 255 * 100;
     wc.state[0][3] = data[7] / 255 * 100;
     
-    wc.state[1][2] = data[10] > 50 ? 100 : 0;
+    wc.state[1][2] = Math.min(2, Math.round(data[10] / 127)) * 50;
     if (wc.state[1][2] > 66) {
         wc.state[1][0] = data[20] / 255 * 100;
         wc.state[1][1] = data[21] / 255 * 100;
@@ -378,7 +381,7 @@
     
     wc.state[2][0] = data[12] / 255 * 100;
     wc.state[2][1] = data[13] / 255 * 100;
-    wc.state[2][2] = data[14] > 50 ? 100 : 0;
+    wc.state[2][2] = data[14] > 127 ? 100 : 0;
     wc.state[2][3] = data[15] / 255 * 100;
     
     wc.state[3][0] = data[16] / 255 * 100;
