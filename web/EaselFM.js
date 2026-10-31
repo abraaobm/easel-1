@@ -36,8 +36,17 @@
       { label: 'OCTAVE', type: 'cont', def: 50 },
       { label: 'GLOBAL FOLD', type: 'cont', def: 50 },
       { label: 'GLOBAL LPG', type: 'cont', def: 50 }
+    ]},
+    { name: 'WAVEFOLD', knobs: [
+      { label: 'SHAPE', type: 'cont', def: 0 },
+      { label: 'FOLD', type: 'cont', def: 20 },
+      { label: 'SYMMETRY', type: 'cont', def: 50 },
+      { label: 'GLOBAL FOLD', type: 'cont', def: 50 }
     ]}
   ];
+  /* Engine parameter behind each knob of the WAVEFOLD page; the same four parameters
+   * also live on VOICE (shape, fold) and SEQUENCE (global fold), so edits are mirrored. */
+  const WAVEFOLD_PARAMS = [0, 1, 23, 20];
 
   const ENGINES = [
     { name: 'CLASSIC', label: 'SHAPE' },
@@ -157,7 +166,7 @@
     const def = PAGES[page].knobs[knobIdx];
     const val = wc.state[page][knobIdx];
     
-    if (page === 0 && knobIdx === 0) {
+    if ((page === 0 || page === 5) && knobIdx === 0) {
         el.querySelector('label').textContent = ENGINES[wc.engine].label;
     } else if (page === 1) {
         if (knobIdx === 0 && wc.state[1][2] > 66) el.querySelector('label').textContent = 'CLOCK RATE';
@@ -181,6 +190,9 @@
       } else if (page === 4 && knobIdx === 1) {
           let v = Math.trunc((val - 50) * 4 / 100);
           el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
+      } else if (page === 5 && knobIdx === 2) {
+          let v = Math.round((val - 50) * 2);
+          el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
       } else {
           el.querySelector('.easel-val').textContent = Math.round(val);
       }
@@ -196,7 +208,7 @@
     });
     
     const engRow = $('easel-engines');
-    if (page === 0) engRow.classList.remove('hidden');
+    if (page === 0 || page === 5) engRow.classList.remove('hidden');
     else engRow.classList.add('hidden');
 
     panel.querySelectorAll('.easel-knob').forEach(el => {
@@ -206,10 +218,14 @@
 
   function applyValue(el, page, knobIdx, val) {
     wc.state[page][knobIdx] = val;
+    if (page === 5 && knobIdx < 2) wc.state[0][knobIdx] = val;
+    if (page === 0 && knobIdx < 2) wc.state[5][knobIdx] = val;
+    if (page === 5 && knobIdx === 3) wc.state[4][2] = val;
+    if (page === 4 && knobIdx === 2) wc.state[5][3] = val;
     updateKnobUI(el, page, knobIdx);
 
     if (globalThis.FM1Easel) {
-        let paramIdx = page === 4 ? 18 + knobIdx : page * 4 + knobIdx;
+        let paramIdx = page === 5 ? WAVEFOLD_PARAMS[knobIdx] : page === 4 ? 18 + knobIdx : page * 4 + knobIdx;
 
         if (page === 1 && knobIdx === 2) {
             globalThis.FM1Easel.setParam(6, val / 100);
@@ -393,6 +409,11 @@
     wc.state[4][1] = data[23] / 255 * 100;
     wc.state[4][2] = data[24] / 255 * 100;
     wc.state[4][3] = data[25] / 255 * 100;
+
+    wc.state[5][0] = wc.state[0][0];
+    wc.state[5][1] = wc.state[0][1];
+    wc.state[5][2] = ((new Int8Array([data[27]]))[0] / 254 + 0.5) * 100;
+    wc.state[5][3] = wc.state[4][2];
 
     const panel = $('sim-easel-panel');
     if (panel) {
