@@ -20,6 +20,7 @@ typedef struct {
     float freq;
     float velocity;
     float pitch_env;
+    float dc_x, dc_y;
     uint8_t note;
     uint8_t active;
 } easel_voice_t;
@@ -54,6 +55,7 @@ static float p_seq_transpose = 0.5f;
 static float p_seq_octave = 0.5f;
 static float p_seq_timbre = 0.5f;
 static float p_seq_lpg_offset = 0.5f;
+static float p_symmetry = 0.5f;   /* 0.5 = centred; moves the wave before the folder */
 
 static float fg_phase = 0.0f;
 static float fg_out = 0.0f;
@@ -105,6 +107,12 @@ void easel_serialize(uint8_t *buf) {
     buf[24] = (uint8_t)(p_seq_timbre * 255.0f);
     buf[25] = (uint8_t)(p_seq_lpg_offset * 255.0f);
     buf[26] = (uint8_t)(p_engine_mode * 255.0f);
+    {
+        int sym = (int)((p_symmetry - 0.5f) * 254.0f);
+        if (sym > 127) sym = 127;
+        if (sym < -127) sym = -127;
+        buf[27] = (uint8_t)(int8_t)sym;
+    }
 }
 
 void easel_deserialize(const uint8_t *buf) {
@@ -133,6 +141,7 @@ void easel_deserialize(const uint8_t *buf) {
     p_seq_timbre = buf[24] / 255.0f;
     p_seq_lpg_offset = buf[25] / 255.0f;
     p_engine_mode = buf[26] / 255.0f;
+    p_symmetry = 0.5f + (float)(int8_t)buf[27] / 254.0f;
 }
 
 EXPORT("sim_easel_get_state") const uint8_t *sim_easel_get_state(void) {
@@ -207,6 +216,7 @@ float easel_get_param(int param) {
     case 20: return p_seq_timbre;
     case 21: return p_seq_lpg_offset;
     case 22: return p_engine_mode;
+    case 23: return p_symmetry;
     default: return 0.0f;
     }
 }
@@ -235,9 +245,16 @@ void easel_ui_snapshot(float viz[8]) {
 /* Static preview of the voice: oscillator + wavefolder with the current knobs. */
 void easel_ui_scope(int8_t *out, unsigned count, float cycles) {
     float depth = (1.0f + p_fold * 4.0f) * (1.0f + p_seq_timbre * 1.5f);
+    float symmetry = (p_symmetry - 0.5f) * 2.0f, wave[256], mean = 0.0f;
+    if (count > 256) count = 256;
     for (unsigned i = 0; i < count; i++) {
         float phase = fmodf(cycles * (float)i / (float)count, 1.0f);
-        float u = wavefold(synth_core(phase, p_shape, p_engine_mode) * depth);
+        wave[i] = wavefold((synth_core(phase, p_shape, p_engine_mode) + symmetry) * depth);
+        mean += wave[i];
+    }
+    mean /= (float)(count ? count : 1);
+    for (unsigned i = 0; i < count; i++) {
+        float u = wave[i] - mean;
         if (u > 1.0f) u = 1.0f;
         if (u < -1.0f) u = -1.0f;
         out[i] = (int8_t)(u * 127.0f);
@@ -279,6 +296,7 @@ void easel_note_on(uint8_t note, uint8_t vel) {
             voices[i].pitch_env = 1.0f;
             voices[i].velocity = vel / 127.0f;
             voices[i].lpg_low = 0.0f;
+            voices[i].dc_x = 0.0f; voices[i].dc_y = 0.0f;
             voices[i].hold_timer = p_pulse_width * 1.5f;
             fg_phase = 0.0f;
             fg_out = 0.0f;
@@ -300,6 +318,7 @@ void easel_note_on(uint8_t note, uint8_t vel) {
     voices[steal].pitch_env = 1.0f;
     voices[steal].velocity = vel / 127.0f;
     voices[steal].lpg_low = 0.0f;
+    voices[steal].dc_x = 0.0f; voices[steal].dc_y = 0.0f;
     voices[steal].hold_timer = p_pulse_width * 1.5f;
     fg_phase = 0.0f;
     fg_out = 0.0f;
@@ -331,6 +350,7 @@ void easel_set_param(int param, float val) {
     if (param == 20) p_seq_timbre = val;
     if (param == 21) p_seq_lpg_offset = val;
     if (param == 22) p_engine_mode = val; 
+    if (param == 23) p_symmetry = val;
 }
 
 void easel_mix(int32_t *out, unsigned frames) {
@@ -422,7 +442,13 @@ void easel_mix(int32_t *out, unsigned frames) {
             float raw = synth_core(voices[v].phase, p_shape, p_engine_mode);
             
             float fold_depth = (1.0f + p_fold * 4.0f) * fold_mod * seq_global_fold;
-            float folded = wavefold(raw * fold_depth);
+            /* Symmetry moves the wave before the folder, so the folds land on one side
+             * first (even harmonics). The high-pass keeps that offset from reaching the LPG. */
+            float symmetry = (p_symmetry - 0.5f) * 2.0f;
+            float folded_raw = wavefold((raw + symmetry) * fold_depth);
+            float folded = folded_raw - voices[v].dc_x + 0.9995f * voices[v].dc_y;
+            voices[v].dc_x = folded_raw;
+            voices[v].dc_y = folded;
 
             float envelope_out;
             if (voices[v].hold_timer > 0.0f) {
