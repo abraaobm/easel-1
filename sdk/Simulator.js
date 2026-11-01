@@ -46,6 +46,18 @@
           case 'easel_set_page': c.sim_easel_set_page(message.track,message.page); break;
           case 'easel_page':     data=c.sim_easel_page(message.track); break;
           case 'easel_note':    c.sim_easel_note(message.note, message.vel); break;
+          case 'easel_state':   data=new Uint8Array(c.memory.buffer,c.sim_easel_get_state(),156).slice(); break;
+          case 'easel_cards':
+            data=[];
+            for(let i=0;i<64;i++){
+              const at=c.sim_easel_preset_name(i);if(!at)break;
+              const bytes=new Uint8Array(c.memory.buffer,at,16);let name='';
+              for(const byte of bytes){if(!byte)break;name+=String.fromCharCode(byte);}
+              data.push(name);
+            }
+            break;
+          case 'easel_card':    c.sim_easel_preset_load(message.index); break;
+          case 'easel_card_info': data={current:c.sim_easel_preset_current(),dirty:c.sim_easel_preset_dirty()}; break;
           case 'easel_param':   c.sim_easel_param(message.param, message.val); break;
 
           case 'open': result=c.sim_open(message.page); if(result)throw Error('当前音源不支持此编辑页。'); break;
@@ -874,6 +886,11 @@
         return null;
     },
     getRevision: () => workspace ? workspace.revision : 0,
+    /* These work with the audio engine running too (the state lives in the worklet then). */
+    readState: () => request('easel_state'),
+    cards: () => request('easel_cards'),
+    loadCard: index => request('easel_card', { index }),
+    cardInfo: () => request('easel_card_info'),
     open: () => request('open', { page: 19 }),
     close: () => request('open', { page: 0 })
   };
