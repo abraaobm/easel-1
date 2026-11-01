@@ -9,41 +9,68 @@
   const PAGES = [
     { name: 'VOICE', knobs: [
       { label: 'SHAPE', type: 'cont', def: 0 },
-      { label: 'FOLD', type: 'cont', def: 20 },
+      { label: 'FOLD', type: 'cont', def: 0 },
       { label: 'DECAY', type: 'cont', def: 50 },
-      { label: 'LPG CUTOFF', type: 'cont', def: 50 }
+      { label: 'LPG CUTOFF', type: 'cont', def: 100 }
     ]},
     { name: 'MOTION', knobs: [
-      { label: 'RISE', type: 'cont', def: 10 },
-      { label: 'FALL', type: 'cont', def: 30 },
+      { label: 'RISE', type: 'cont', def: 0 },
+      { label: 'FALL', type: 'cont', def: 0 },
       { label: 'LOOP', type: 'switch3', def: 0, labels: ['OFF', 'LFO', 'EUCLID'] },
       { label: 'PULSE WIDTH', type: 'cont', def: 0 }
     ]},
     { name: 'MOD/RAND', knobs: [
-      { label: 'RATE', type: 'cont', def: 50 },
+      { label: 'RATE', type: 'cont', def: 0 },
       { label: 'AMOUNT', type: 'cont', def: 0 },
       { label: 'TARGET', type: 'switch', def: 0, labels: ['TIMBRE', 'PITCH'] },
       { label: 'SMOOTH', type: 'cont', def: 0 }
     ]},
     { name: 'SPACE', knobs: [
-      { label: 'P. AMOUNT', type: 'cont', def: 50 },
-      { label: 'P. DECAY', type: 'cont', def: 20 },
-      { label: 'REV MIX', type: 'cont', def: 30 },
-      { label: 'REV TIME', type: 'cont', def: 50 }
+      { label: 'P. AMOUNT', type: 'cont', def: 0 },
+      { label: 'P. DECAY', type: 'cont', def: 0 },
+      { label: 'REV MIX', type: 'cont', def: 0 },
+      { label: 'REV TIME', type: 'cont', def: 0 }
     ]},
     { name: 'SEQUENCE', knobs: [
       { label: 'TRANSPOSE', type: 'cont', def: 50 },
       { label: 'OCTAVE', type: 'cont', def: 50 },
-      { label: 'GLOBAL FOLD', type: 'cont', def: 50 },
-      { label: 'GLOBAL LPG', type: 'cont', def: 50 }
+      { label: 'GLOBAL FOLD', type: 'cont', def: 0 },
+      { label: 'GLOBAL LPG', type: 'cont', def: 100 }
     ]},
     { name: 'WAVEFOLD', knobs: [
       { label: 'SHAPE', type: 'cont', def: 0 },
-      { label: 'FOLD', type: 'cont', def: 20 },
+      { label: 'FOLD', type: 'cont', def: 0 },
       { label: 'SYMMETRY', type: 'cont', def: 50 },
-      { label: 'GLOBAL FOLD', type: 'cont', def: 50 }
+      { label: 'GLOBAL FOLD', type: 'cont', def: 0 }
+    ]},
+    { name: 'LPG', knobs: [
+      { label: 'DECAY', type: 'cont', def: 50 },
+      { label: 'LPG CUTOFF', type: 'cont', def: 100 },
+      { label: 'MODE', type: 'switch3', def: 50, labels: ['BOTH', 'VCA', 'LPF'] },
+      { label: 'VACTROL', type: 'cont', def: 0 }
+    ]},
+    { name: 'MOD OSC', knobs: [
+      { label: 'RATIO', type: 'cont', def: 25 },
+      { label: 'FM', type: 'cont', def: 0 },
+      { label: 'TIMBRE', type: 'cont', def: 0 },
+      { label: 'MODE', type: 'switch', def: 0, labels: ['TRACK', 'LFO'] }
+    ]},
+    { name: 'PATCH', knobs: [
+      { label: 'SOURCE', type: 'choice', def: 0, labels: ['FUNC', 'RAND', 'ENV', 'MOD', 'VEL'] },
+      { label: 'DEST', type: 'choice', def: 0, labels: ['PITCH', 'SHAPE', 'FOLD', 'SYMM', 'CUTOFF', 'FM'] },
+      { label: 'AMOUNT', type: 'cont', def: 50 },
+      { label: 'DEPTH', type: 'cont', def: 100 }
     ]}
   ];
+  /* Patch matrix: wc.patch[source * 6 + destination] is the amount (-100..+100). The panel
+   * edits one cell at a time (SOURCE, DEST, AMOUNT); the LCD shows the whole grid. */
+  wc.patch = new Array(30).fill(0);
+  const PATCH_SOURCES = ['FUNC', 'RAND', 'ENV', 'MOD', 'VEL'];
+  const PATCH_DESTS = ['PITCH', 'SHAPE', 'FOLD', 'SYMM', 'CUTOFF', 'FM'];
+  const patchCell = () => Math.round(wc.state[8][0] / 100 * 4) * 6 + Math.round(wc.state[8][1] / 100 * 5);
+  const MODOSC_PARAMS = [26, 27, 28, 29];
+  /* Same idea for the LPG page: decay and cutoff are shared with VOICE. */
+  const LPG_PARAMS = [2, 3, 24, 25];
   /* Engine parameter behind each knob of the WAVEFOLD page; the same four parameters
    * also live on VOICE (shape, fold) and SEQUENCE (global fold), so edits are mirrored. */
   const WAVEFOLD_PARAMS = [0, 1, 23, 20];
@@ -79,11 +106,13 @@
       .easel-header{display:flex;align-items:center;gap:8px;
         border-bottom:1px solid #33691e;padding-bottom:6px;margin-bottom:10px}
       .easel-header strong{color:#8bc34a;letter-spacing:.1em;font-size:12px;text-shadow:0 0 5px #8bc34a50}
+      .easel-card{margin-left:8px;flex:1;max-width:160px;background:#2e3b25;color:#dcedc8;border:1px solid #33691e;
+        border-radius:4px;padding:3px 4px;font:10px system-ui,sans-serif}
       .easel-header #easel-close{background:none;border:none;color:#aed581;
         font-size:18px;cursor:pointer;padding:0 4px;line-height:1;margin-left:auto}
       .easel-header #easel-close:hover{color:#ff8a65}
-      .easel-nav{display:flex;gap:4px;margin-bottom:10px}
-      .easel-nav button{flex:1;padding:6px;background:#2e3b25;color:#aed581;
+      .easel-nav{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px}
+      .easel-nav button{flex:1 1 30%;padding:6px;background:#2e3b25;color:#aed581;
         border:1px solid #33691e;border-radius:4px;cursor:pointer;font-size:9px;font-weight:bold}
       .easel-nav button[aria-pressed=true]{background:#558b2f;color:#fff;border-color:#8bc34a}
       
@@ -102,6 +131,8 @@
       .easel-knob .easel-valbar{height:2px;background:#1a1c18;margin-top:6px;border-radius:2px;overflow:hidden}
       .easel-knob .easel-valbar>i{display:block;height:100%;background:#8bc34a;transition:width .05s}
       .easel-knob.drag{background:#37474f;border-color:#8bc34a}
+      .easel-patchlist{margin-top:8px;font:10px/1.5 Consolas,monospace;color:#aed581;max-height:80px;overflow:auto}
+      .easel-patchlist[hidden]{display:none}
       .easel-footer{display:flex;gap:6px;margin-top:12px}
       .easel-footer button{flex:1;padding:8px;background:#2e3b25;color:#aed581;
         border:1px solid #33691e;border-radius:4px;cursor:pointer;font-size:10px;font-weight:bold;}
@@ -124,6 +155,7 @@
     panel.innerHTML = `
       <div class="easel-header">
         <strong>EASEL-1 <span>v2.4</span></strong>
+        <select id="easel-card" class="easel-card" aria-label="Card"><option value="-1">CUSTOM</option></select>
         <button id="easel-close" aria-label="Close">×</button>
       </div>
       <div class="easel-nav">
@@ -139,6 +171,7 @@
             <div class="easel-valbar"><i style="width:${PAGES[0].knobs[i].def}%"></i></div>
           </div>`).join('')}
       </div>
+      <div class="easel-patchlist" id="easel-patch-list" hidden></div>
       <div class="easel-footer">
         <button id="easel-test" class="test">TEST NOTE</button>
         <button id="easel-exit">Exit</button>
@@ -179,6 +212,10 @@
     if (def.type === 'switch') {
       el.querySelector('.easel-val').textContent = def.labels[val > 50 ? 1 : 0];
       el.querySelector('.easel-valbar > i').style.width = (val > 50 ? 100 : 0) + '%';
+    } else if (def.type === 'choice') {
+      const n = def.labels.length, idx = Math.max(0, Math.min(n - 1, Math.round(val / 100 * (n - 1))));
+      el.querySelector('.easel-val').textContent = def.labels[idx];
+      el.querySelector('.easel-valbar > i').style.width = val + '%';
     } else if (def.type === 'switch3') {
       let idx = val < 25 ? 0 : val < 75 ? 1 : 2;
       el.querySelector('.easel-val').textContent = def.labels[idx];
@@ -190,6 +227,14 @@
       } else if (page === 4 && knobIdx === 1) {
           let v = Math.trunc((val - 50) * 4 / 100);
           el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
+      } else if (page === 8 && knobIdx === 2) {
+          let v = Math.round((val - 50) * 2);
+          el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
+      } else if (page === 7 && knobIdx === 0) {
+          const lfo = wc.state[7][3] > 50;
+          const v = lfo ? 0.05 * Math.pow(2, 11 * val / 100) : 0.5 * Math.pow(2, 4 * val / 100);
+          el.querySelector('label').textContent = lfo ? 'RATE HZ' : 'RATIO';
+          el.querySelector('.easel-val').textContent = v >= 10 ? Math.round(v) : v.toFixed(1);
       } else if (page === 5 && knobIdx === 2) {
           let v = Math.round((val - 50) * 2);
           el.querySelector('.easel-val').textContent = (v > 0 ? '+' : '') + v;
@@ -214,6 +259,35 @@
     panel.querySelectorAll('.easel-knob').forEach(el => {
       updateKnobUI(el, page, Number(el.dataset.easelKnob));
     });
+    updatePatchList();
+  }
+
+  function updatePatchList() {
+    const list = $('easel-patch-list');
+    if (!list) return;
+    list.hidden = wc.page !== 8;
+    if (wc.page !== 8) return;
+    const rows = [];
+    wc.patch.forEach((a, i) => {
+      if (a) rows.push(PATCH_SOURCES[Math.floor(i / 6)] + ' > ' + PATCH_DESTS[i % 6] + '  ' + (a > 0 ? '+' : '') + a);
+    });
+    list.textContent = rows.length ? rows.join('\n') : 'NO CABLES PATCHED';
+    list.style.whiteSpace = 'pre';
+  }
+
+  function applyPatchValue(el, knobIdx, val) {
+    const knobs = el.parentElement;
+    if (knobIdx < 2) {
+      wc.state[8][2] = 50 + wc.patch[patchCell()] / 2;
+      updateKnobUI(knobs.querySelector('[data-easel-knob="2"]'), 8, 2);
+    } else if (knobIdx === 2) {
+      const cell = patchCell(), amount = Math.round((val - 50) * 2);
+      wc.patch[cell] = amount;
+      if (globalThis.FM1Easel) globalThis.FM1Easel.setParam(32 + cell, 0.5 + amount / 200);
+    } else if (globalThis.FM1Easel) {
+      globalThis.FM1Easel.setParam(30, val / 100);
+    }
+    updatePatchList();
   }
 
   function applyValue(el, page, knobIdx, val) {
@@ -222,10 +296,14 @@
     if (page === 0 && knobIdx < 2) wc.state[5][knobIdx] = val;
     if (page === 5 && knobIdx === 3) wc.state[4][2] = val;
     if (page === 4 && knobIdx === 2) wc.state[5][3] = val;
+    if (page === 6 && knobIdx < 2) wc.state[0][knobIdx + 2] = val;
+    if (page === 7 && knobIdx === 3) updateKnobUI(el.parentElement.querySelector('[data-easel-knob="0"]'), 7, 0);
+    if (page === 0 && knobIdx >= 2) wc.state[6][knobIdx - 2] = val;
     updateKnobUI(el, page, knobIdx);
+    if (page === 8) { applyPatchValue(el, knobIdx, val); return; }
 
     if (globalThis.FM1Easel) {
-        let paramIdx = page === 5 ? WAVEFOLD_PARAMS[knobIdx] : page === 4 ? 18 + knobIdx : page * 4 + knobIdx;
+        let paramIdx = page === 7 ? MODOSC_PARAMS[knobIdx] : page === 6 ? LPG_PARAMS[knobIdx] : page === 5 ? WAVEFOLD_PARAMS[knobIdx] : page === 4 ? 18 + knobIdx : page * 4 + knobIdx;
 
         if (page === 1 && knobIdx === 2) {
             globalThis.FM1Easel.setParam(6, val / 100);
@@ -270,7 +348,11 @@
         let next = current;
         const def = PAGES[wc.page].knobs[knobIdx];
         
-        if (def.type === 'switch') {
+        if (def.type === 'choice') {
+            const n = def.labels.length;
+            const idx = Math.max(0, Math.min(n - 1, Math.round(current / 100 * (n - 1)) + Math.sign(d)));
+            next = idx * 100 / (n - 1);
+        } else if (def.type === 'switch') {
             next = current > 50 ? 0 : 100;
         } else if (def.type === 'switch3') {
             if (current < 25) next = 50;
@@ -297,7 +379,10 @@
           const current = wc.state[wc.page][knobIdx];
           const def = PAGES[wc.page].knobs[knobIdx];
           let next;
-          if (def.type === 'switch') next = current > 50 ? 0 : 100;
+          if (def.type === 'choice') {
+              const n = def.labels.length;
+              next = ((Math.round(current / 100 * (n - 1)) + 1) % n) * 100 / (n - 1);
+          } else if (def.type === 'switch') next = current > 50 ? 0 : 100;
           else if (def.type === 'switch3') {
               if (current < 25) next = 50;
               else if (current < 75) next = 100;
@@ -373,9 +458,45 @@
     renderPage(wc.page);
   }
 
-  function syncFromEngine() {
-    if (!globalThis.FM1Easel) return;
-    const data = globalThis.FM1Easel.getState();
+  /* Card list and current card (the engine owns both; the LCD can change them too). */
+  async function refreshCards(api, info) {
+    const select = $('easel-card');
+    if (!select) return;
+    if (!wc.cards) {
+      wc.cards = await api.cards();
+      select.innerHTML = '<option value="-1">CUSTOM</option>' +
+        wc.cards.map((name, i) => `<option value="${i}">${String(i).padStart(2, '0')} ${name}</option>`).join('');
+      select.onchange = async () => {
+        const index = Number(select.value);
+        if (index < 0) return;
+        await api.loadCard(index);
+        syncFromEngine();
+      };
+    }
+    select.value = String(info.current);
+    [...select.options].forEach(option => {
+      const index = Number(option.value);
+      if (index < 0) return;
+      option.textContent = `${String(index).padStart(2, '0')} ${wc.cards[index]}${index === info.current && info.dirty ? ' *' : ''}`;
+    });
+  }
+
+  async function syncFromEngine() {
+    const api = globalThis.FM1Easel;
+    if (!api || wc.syncing) return;
+    wc.syncing = true;
+    try {
+      const [data, info] = await Promise.all([api.readState(), api.cardInfo()]);
+      await refreshCards(api, info);
+      applyEngineState(data);
+    } catch (error) {
+      /* The simulator is still loading; the next poll tries again. */
+    } finally {
+      wc.syncing = false;
+    }
+  }
+
+  function applyEngineState(data) {
     if (!data || data[0] !== 69 || data[1] !== 65 || data[2] !== 83 || data[3] !== 76) return;
     
     wc.engine = Math.round(data[26] / 255 * 3);
@@ -415,6 +536,20 @@
     wc.state[5][2] = ((new Int8Array([data[27]]))[0] / 254 + 0.5) * 100;
     wc.state[5][3] = wc.state[4][2];
 
+    wc.state[6][0] = wc.state[0][2];
+    wc.state[6][1] = wc.state[0][3];
+    wc.state[6][2] = Math.min(2, Math.round(data[28] / 127)) * 50;
+    wc.state[6][3] = data[29] / 255 * 100;
+
+    wc.state[7][0] = data[30] / 255 * 100;
+    wc.state[7][1] = data[31] / 255 * 100;
+    wc.state[7][2] = data[32] / 255 * 100;
+    wc.state[7][3] = data[33] > 127 ? 100 : 0;
+
+    for (let i = 0; i < 30; i++) wc.patch[i] = (data[35 + i] << 24) >> 24;
+    wc.state[8][2] = 50 + wc.patch[patchCell()] / 2;
+    wc.state[8][3] = (255 - data[65]) / 255 * 100;
+
     const panel = $('sim-easel-panel');
     if (panel) {
         panel.querySelectorAll('[data-easel-engine]').forEach(b => {
@@ -423,6 +558,7 @@
         panel.querySelectorAll('.easel-knob').forEach(el => {
             updateKnobUI(el, wc.page, Number(el.dataset.easelKnob));
         });
+        updatePatchList();
     }
   }
 
