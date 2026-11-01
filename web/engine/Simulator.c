@@ -487,6 +487,16 @@ EXPORT("sim_midi") int sim_midi(unsigned bytes) { return sim_midi_from(FM1_MIDI_
 
 EXPORT("sim_easel_note") void web_easel_note(uint8_t note, uint8_t vel) { easel_note_on(note, vel); }
 EXPORT("sim_easel_param") void web_easel_param(int param, float val) { easel_set_param(param, val); }
+extern unsigned easel_preset_count(void);
+extern const char *easel_preset_name(unsigned index);
+extern void easel_preset_load(unsigned index);
+extern int easel_preset_current(void);
+extern int easel_preset_dirty(void);
+EXPORT("sim_easel_preset_count") unsigned web_easel_preset_count(void) { return easel_preset_count(); }
+EXPORT("sim_easel_preset_name") const char *web_easel_preset_name(unsigned index) { return easel_preset_name(index); }
+EXPORT("sim_easel_preset_load") void web_easel_preset_load(unsigned index) { easel_preset_load(index); }
+EXPORT("sim_easel_preset_current") int web_easel_preset_current(void) { return easel_preset_current(); }
+EXPORT("sim_easel_preset_dirty") int web_easel_preset_dirty(void) { return easel_preset_dirty(); }
 
 int fm1_usb_audio_read(int32_t *pcm, unsigned frames, uint16_t gains[2])
 {
