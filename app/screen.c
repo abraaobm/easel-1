@@ -1365,24 +1365,39 @@ extern float easel_get_param(int param);
 extern void easel_set_param(int param, float value);
 extern void easel_ui_snapshot(float viz[8]);
 extern void easel_ui_scope(int8_t *out, unsigned count, float cycles);
+extern void easel_ui_lpg(uint8_t *amp, uint8_t *bright, uint8_t *ideal, unsigned count);
+extern void easel_ui_modosc(int8_t *mod, int8_t *out, unsigned count);
+extern float easel_ui_mod_rate(void);
+extern unsigned easel_preset_count(void);
+extern const char *easel_preset_name(unsigned index);
+extern void easel_preset_load(unsigned index);
+extern int easel_preset_current(void);
+extern int easel_preset_dirty(void);
 enum {
     WC_BG = 0xbdf7, WC_LIGHT = 0xdefb, WC_GRID = 0xa534, WC_DARK = 0x8410, WC_INK = 0x0000,
     WC_BLUE = 0x03bf, WC_ORANGE = 0xfc60, WC_YELLOW = 0xffe0, WC_RED = 0xf800,
-    WC_PURPLE = 0x8010, WC_GREEN = 0x0600, WC_WHITE = 0xffff, WC_NOTE = 0x4208, WC_TEAL = 0x0410
+    WC_PURPLE = 0x8010, WC_GREEN = 0x0600, WC_WHITE = 0xffff, WC_NOTE = 0x4208, WC_TEAL = 0x0410, WC_GOLD = 0xcca0, WC_PINK = 0xc94f
 };
-enum { WC_PAGES = 6, WC_PARAMS = 24, WC_SCOPE = 224, WC_HIST = 8 };
+enum { WC_PAGES = 9, WC_PARAMS = 31, WC_SCOPE = 224, WC_HIST = 8, WC_CELLS = 30 };
 static unsigned wc_page;
 static struct {
     uint8_t pct[WC_PARAMS];
     uint8_t loop, engine;
     float viz[8];
     int8_t scope[WC_SCOPE];
+    uint8_t lpg_amp[WC_SCOPE], lpg_bright[WC_SCOPE], lpg_ideal[WC_SCOPE];
+    int8_t mod_wave[WC_SCOPE], mod_out[WC_SCOPE];
+    int8_t patch[WC_CELLS];
+    float mod_rate;
+    int card;
+    uint8_t dirty;
 } wc_frame;
+static unsigned wc_src, wc_dst;   /* patch cursor: source row, destination column */
 static int8_t wc_hist[WC_HIST];
 static float wc_last_random = 2.0f;
-static const char *const wc_names[WC_PAGES] = {"VOICE", "MOTION", "MOD/RAND", "SPACE", "SEQUENCE", "WAVEFOLD"};
+static const char *const wc_names[WC_PAGES] = {"VOICE", "MOTION", "MOD/RAND", "SPACE", "SEQUENCE", "WAVEFOLD", "LPG", "MOD OSC", "PATCH"};
 static const char *const wc_engines[4] = {"CLASSIC", "FM", "RING", "PHASE"};
-static const uint16_t wc_accents[WC_PAGES] = {WC_BLUE, WC_ORANGE, WC_PURPLE, WC_GREEN, WC_RED, WC_TEAL};
+static const uint16_t wc_accents[WC_PAGES] = {WC_BLUE, WC_ORANGE, WC_PURPLE, WC_GREEN, WC_RED, WC_TEAL, WC_GOLD, WC_PINK, WC_NOTE};
 
 static unsigned wc_read(unsigned index)
 {
@@ -1400,13 +1415,22 @@ static void wc_snapshot(void)
         memmove(wc_hist, wc_hist + 1, WC_HIST - 1);
         wc_hist[WC_HIST - 1] = (int8_t)(wc_last_random * 127.0f);
     }
-    if (wc_page == 0 || wc_page == 5) easel_ui_scope(wc_frame.scope, WC_SCOPE, 2.5f);
+    if (wc_page == 0 || wc_page == 5) easel_ui_scope(wc_frame.scope, WC_SCOPE, 2.0f);
+    wc_frame.mod_rate = easel_ui_mod_rate();
+    wc_frame.card = easel_preset_current();
+    wc_frame.dirty = (uint8_t)easel_preset_dirty();
+    for (unsigned i = 0; i < WC_CELLS; ++i)
+        wc_frame.patch[i] = (int8_t)clamp((int)lroundf((easel_get_param((int)(32 + i)) - 0.5f) * 200.0f), -100, 100);
+    if (wc_page == 7) easel_ui_modosc(wc_frame.mod_wave, wc_frame.mod_out, WC_SCOPE);
+    if (wc_page == 6) easel_ui_lpg(wc_frame.lpg_amp, wc_frame.lpg_bright, wc_frame.lpg_ideal, WC_SCOPE);
 }
 /* Parameter slot behind each of the sixteen+four knobs. */
 static unsigned wc_map(unsigned page_index, unsigned knob, unsigned euclid)
 {
-    static const uint8_t wavefold[4] = {0, 1, 23, 20};
+    static const uint8_t wavefold[4] = {0, 1, 23, 20}, gate[4] = {2, 3, 24, 25}, modosc[4] = {26, 27, 28, 29};
     if (page_index == 5) return wavefold[knob];
+    if (page_index == 6) return gate[knob];
+    if (page_index == 7) return modosc[knob];
     if (page_index == 4) return 18 + knob;
     if (page_index == 1 && euclid && knob < 2) return 16 + knob;
     return page_index * 4 + knob;
@@ -1415,15 +1439,29 @@ static unsigned wc_param_index(unsigned knob)
 {
     return wc_map(wc_page, knob, wc_read(6) >= 75U);
 }
+static void wc_edit_patch(unsigned knob, int delta)
+{
+    int sign = delta > 0 ? 1 : -1;
+    unsigned cell = 32U + wc_src * 6U + wc_dst;
+    if (knob == 0) wc_src = (unsigned)clamp((int)wc_src + sign, 0, 4);
+    else if (knob == 1) wc_dst = (unsigned)clamp((int)wc_dst + sign, 0, 5);
+    else if (knob == 2) {
+        int amount = clamp((int)lroundf((easel_get_param((int)cell) - 0.5f) * 200.0f) + delta, -100, 100);
+        easel_set_param((int)cell, 0.5f + (float)amount / 200.0f);
+    } else {
+        easel_set_param(30, (float)clamp((int)wc_read(30) + delta, 0, 100) / 100.0f);
+    }
+}
 static void wc_edit(unsigned knob, int delta)
 {
+    if (wc_page == 8) { wc_edit_patch(knob, delta); return; }
     unsigned index = wc_param_index(knob), pct = wc_read(index);
     int sign = delta > 0 ? 1 : -1;
-    if (index == 6) {
+    if (index == 6 || index == 24) {
         int mode = clamp((int)((pct + 25U) / 50U) + sign, 0, 2);
-        easel_set_param(6, (float)mode * 0.5f);
-    } else if (index == 10) {
-        easel_set_param(10, sign > 0 ? 1.0f : 0.0f);
+        easel_set_param((int)index, (float)mode * 0.5f);
+    } else if (index == 10 || index == 29) {
+        easel_set_param((int)index, sign > 0 ? 1.0f : 0.0f);
     } else if (index == 18) {
         int semis = clamp(((int)pct - 50) * 24 / 100 + delta, -12, 12);
         float bias = semis > 0 ? 0.2f : semis < 0 ? -0.2f : 0.0f;
@@ -1438,6 +1476,11 @@ static void wc_edit(unsigned knob, int delta)
 }
 static void wc_control(const int16_t encoders[7])
 {
+    if (encoders[0]) {
+        int count = (int)easel_preset_count(), current = easel_preset_current();
+        int next = current < 0 ? (encoders[0] > 0 ? 0 : count - 1) : clamp(current + (encoders[0] > 0 ? 1 : -1), 0, count - 1);
+        easel_preset_load((unsigned)next);
+    }
     if (encoders[1]) wc_page = (unsigned)clamp((int)wc_page + encoders[1], 0, WC_PAGES - 1);
     if (encoders[6]) {
         unsigned engine = (unsigned)(easel_get_param(22) * 3.1f);
@@ -1452,25 +1495,58 @@ static void wc_signed(char out[12], int value)
     if (value > 0) { out[0] = '+'; decimal(out + 1, value, 1); }
     else decimal(out, value, 1);
 }
+static void wc_tenths(char out[12], float value)
+{
+    int tenths = (int)(value * 10.0f + 0.5f);
+    decimal(out, tenths / 10, 1);
+    if (tenths < 100) {
+        char digit[3] = {'.', (char)('0' + tenths % 10), 0};
+        strcat(out, digit);
+    }
+}
 static void wc_knob_info(unsigned knob, const char **label, char value[12], unsigned *fill)
 {
     static const char *const labels[WC_PAGES][4] = {
         {"SHAPE", "FOLD", "DECAY", "LPG CUT"}, {"RISE", "FALL", "LOOP", "PULSE W"},
         {"RATE", "AMOUNT", "TARGET", "SMOOTH"}, {"P. AMT", "P. DEC", "REV MIX", "REV TIME"},
-        {"TRANSP", "OCTAVE", "G. FOLD", "G. LPG"}, {"SHAPE", "FOLD", "SYMMETRY", "G. FOLD"}};
+        {"TRANSP", "OCTAVE", "G. FOLD", "G. LPG"}, {"SHAPE", "FOLD", "SYMMETRY", "G. FOLD"}, {"DECAY", "CUTOFF", "MODE", "VACTROL"}, {"RATIO", "FM", "TIMBRE", "MODE"}};
     static const char *const shapes[4] = {"SHAPE", "FM IDX", "RING DEP", "PD AMT"};
-    static const char *const loops[3] = {"OFF", "LFO", "EUC"};
+    static const char *const modes[2] = {"TRACK", "LFO"};
+    static const char *const loops[3] = {"OFF", "LFO", "EUC"}, *const gates[3] = {"BOTH", "VCA", "LPF"};
+    if (wc_page == 8) {
+        static const char *const sources[5] = {"FUNC", "RAND", "ENV", "MOD", "VEL"};
+        static const char *const dests[6] = {"PITCH", "SHAPE", "FOLD", "SYMM", "CUTOFF", "FM"};
+        static const char *const names[4] = {"SOURCE", "DEST", "AMOUNT", "DEPTH"};
+        int amount = wc_frame.patch[wc_src * 6U + wc_dst];
+        *label = names[knob];
+        value[0] = 0;
+        if (knob == 0) { strcpy(value, sources[wc_src]); *fill = wc_src * 25U; }
+        else if (knob == 1) { strcpy(value, dests[wc_dst]); *fill = wc_dst * 20U; }
+        else if (knob == 2) { wc_signed(value, amount); *fill = (unsigned)(amount + 100) / 2U; }
+        else { decimal(value, (int)wc_frame.pct[30], 1); *fill = wc_frame.pct[30]; }
+        return;
+    }
     unsigned euclid = wc_page == 1 && wc_frame.loop == 2 && knob < 2;
     unsigned index = wc_map(wc_page, knob, euclid);
     unsigned pct = wc_frame.pct[index];
     *label = labels[wc_page][knob];
     if ((wc_page == 0 || wc_page == 5) && knob == 0) *label = shapes[wc_frame.engine];
     if (euclid) *label = knob ? "PULSES" : "CLK RATE";
+    if (wc_page == 7 && knob == 0 && wc_frame.pct[29] > 50U) *label = "RATE HZ";
     *fill = pct;
     value[0] = 0;
     if (index == 6) {
         strcpy(value, loops[wc_frame.loop]);
         *fill = wc_frame.loop * 50U;
+    } else if (index == 26) {
+        wc_tenths(value, wc_frame.mod_rate);
+    } else if (index == 29) {
+        strcpy(value, modes[pct > 50U ? 1 : 0]);
+        *fill = pct > 50U ? 100U : 0U;
+    } else if (index == 24) {
+        unsigned mode = (pct + 25U) / 50U;
+        strcpy(value, gates[mode > 2U ? 2U : mode]);
+        *fill = (mode > 2U ? 2U : mode) * 50U;
     } else if (index == 10) {
         strcpy(value, pct > 50U ? "PITCH" : "TIMBRE");
         *fill = pct > 50U ? 100U : 0U;
@@ -1621,6 +1697,97 @@ static void wc_draw_space(void)
     wc_tag(122, 37, "SPRING REV", WC_BLUE);
     wc_strip("PITCH ENVELOPE + SPRING TANK");
 }
+static void wc_draw_lpg(void)
+{
+    static const char *const modes[3] = {"FILTER + VCA", "VCA ONLY", "FILTER ONLY"};
+    for (unsigned i = 1; i < 8; ++i) paint_fill(8 + i * 28, 34, 1, 146, WC_GRID);
+    paint_fill(8, 172, 224, 1, WC_DARK);
+    paint_fill(19, 40, 1, 132, WC_RED);
+    int ideal = 172 - wc_frame.lpg_ideal[0] * 128 / 255, bright = ideal, amp = ideal;
+    for (unsigned x = 1; x < WC_SCOPE; ++x) {
+        int i2 = 172 - wc_frame.lpg_ideal[x] * 128 / 255, b2 = 172 - wc_frame.lpg_bright[x] * 128 / 255,
+            a2 = 172 - wc_frame.lpg_amp[x] * 128 / 255;
+        line((int)(7 + x), ideal, (int)(8 + x), i2, WC_DARK);
+        line((int)(7 + x), bright, (int)(8 + x), b2, WC_BLUE);
+        wc_thick((int)(7 + x), amp, (int)(8 + x), a2, WC_GOLD);
+        ideal = i2; bright = b2; amp = a2;
+    }
+    wc_tag(10, 37, "AMP", WC_GOLD);
+    wc_tag(38, 37, "BRIGHT", WC_BLUE);
+    wc_tag(82, 37, "IDEAL", WC_DARK);
+    unsigned mode = (wc_frame.pct[24] + 25U) / 50U;
+    char status[40] = "";
+    strcat(status, modes[mode > 2U ? 2U : mode]);
+    strcat(status, "  VACTROL ");
+    char digits[12];
+    decimal(digits, (int)wc_frame.pct[25], 1);
+    strcat(status, digits);
+    wc_strip(status);
+}
+static void wc_draw_modosc(void)
+{
+    paint_fill(8, 82, 224, 1, WC_DARK);
+    paint_fill(8, 58, 224, 1, WC_GRID);
+    paint_fill(8, 130, 224, 1, WC_GRID);
+    int mod = 58 - wc_frame.mod_wave[0] * 20 / 127, out = 130 - wc_frame.mod_out[0] * 44 / 127;
+    for (unsigned x = 1; x < WC_SCOPE; ++x) {
+        int m2 = 58 - wc_frame.mod_wave[x] * 20 / 127, o2 = 130 - wc_frame.mod_out[x] * 44 / 127;
+        wc_thick((int)(7 + x), mod, (int)(8 + x), m2, WC_PINK);
+        wc_thick((int)(7 + x), out, (int)(8 + x), o2, WC_BLUE);
+        mod = m2; out = o2;
+    }
+    wc_tag(10, 37, "MODULATOR", WC_PINK);
+    wc_tag(10, 86, "OUTPUT", WC_BLUE);
+    char status[40] = "FM ", digits[12];
+    decimal(digits, (int)wc_frame.pct[27], 1); strcat(status, digits);
+    strcat(status, "  TIMBRE "); decimal(digits, (int)wc_frame.pct[28], 1); strcat(status, digits);
+    strcat(status, wc_frame.pct[29] > 50U ? "  LFO " : "  X");
+    wc_tenths(digits, wc_frame.mod_rate); strcat(status, digits);
+    wc_strip(status);
+}
+static void wc_draw_patch(void)
+{
+    static const char *const rows[5] = {"FUNC", "RAND", "ENV", "MOD", "VEL"};
+    static const char *const cols[6] = {"PTCH", "SHPE", "FOLD", "SYMM", "CUT", "FM"};
+    for (unsigned c = 0; c < 6; ++c) {
+        unsigned x = 38 + c * 32, n = (unsigned)strlen(cols[c]), tx = x + (31U - 6U * n) / 2U;
+        uint16_t bg = c == wc_dst ? WC_INK : WC_LIGHT;
+        paint_fill(x, 35, 31, 10, bg);
+        text(tx, 37, cols[c], 1, c == wc_dst ? WC_WHITE : WC_INK, bg);
+    }
+    for (unsigned r = 0; r < 5; ++r) {
+        unsigned y = 47 + r * 26;
+        uint16_t bg = r == wc_src ? WC_INK : WC_LIGHT;
+        paint_fill(9, y, 28, 25, bg);
+        text(11, y + 9, rows[r], 1, r == wc_src ? WC_WHITE : WC_INK, bg);
+        for (unsigned c = 0; c < 6; ++c) {
+            unsigned x = 38 + c * 32;
+            int amount = wc_frame.patch[r * 6 + c];
+            unsigned size = (unsigned)(amount < 0 ? -amount : amount);
+            paint_fill(x, y, 31, 25, WC_BG);
+            if (amount) paint_fill(x, y + 25 - (2 + size * 21 / 100), 31, 2 + size * 21 / 100, amount > 0 ? WC_ORANGE : WC_BLUE);
+            frame(x, y, 31, 25, WC_INK);
+            if (amount) {
+                char value[12];
+                wc_signed(value, amount);
+                text(x + 3, y + 4, value, 1, WC_INK, amount > 0 ? WC_ORANGE : WC_BLUE);
+            }
+        }
+    }
+    unsigned x = 38 + wc_dst * 32, y = 47 + wc_src * 26;
+    frame(x - 1, y - 1, 33, 27, WC_RED);
+    frame(x, y, 31, 25, WC_RED);
+    static const char *const sources[5] = {"FUNC", "RAND", "ENV", "MOD", "VEL"};
+    static const char *const dests[6] = {"PITCH", "SHAPE", "FOLD", "SYMM", "CUTOFF", "FM"};
+    char status[40] = "", digits[12];
+    strcat(status, sources[wc_src]);
+    strcat(status, " > ");
+    strcat(status, dests[wc_dst]);
+    strcat(status, "  ");
+    wc_signed(digits, wc_frame.patch[wc_src * 6U + wc_dst]);
+    strcat(status, digits);
+    wc_strip(status);
+}
 static void wc_draw_seq(void)
 {
     const struct groove_view *v = &frame_views[track];
@@ -1665,6 +1832,18 @@ static void wc_graph(void)
     case 3:
         key[0] = wc_frame.pct[12] | (wc_frame.pct[13] << 8) | ((uint32_t)wc_frame.pct[14] << 16) | ((uint32_t)wc_frame.pct[15] << 24);
         break;
+    case 8:
+        memcpy(key, wc_frame.patch, WC_CELLS);
+        key[8] = wc_src | (wc_dst << 8);
+        break;
+    case 7:
+        key[0] = wc_frame.pct[0] | (wc_frame.pct[1] << 8) | ((uint32_t)wc_frame.pct[20] << 16) | ((uint32_t)wc_frame.engine << 24);
+        key[1] = wc_frame.pct[23] | (wc_frame.pct[26] << 8) | ((uint32_t)wc_frame.pct[27] << 16) | ((uint32_t)wc_frame.pct[28] << 24);
+        key[2] = wc_frame.pct[29];
+        break;
+    case 6:
+        key[0] = wc_frame.pct[2] | (wc_frame.pct[7] << 8) | ((uint32_t)wc_frame.pct[24] << 16) | ((uint32_t)wc_frame.pct[25] << 24);
+        break;
     default:
         key[0] = (uint32_t)v->active_steps; key[1] = (uint32_t)(v->active_steps >> 32);
         key[2] = v->play_step | ((uint32_t)v->playing << 8) | (v->sequence_length << 16);
@@ -1680,24 +1859,37 @@ static void wc_graph(void)
     else if (wc_page == 1) wc_draw_motion();
     else if (wc_page == 2) wc_draw_mod();
     else if (wc_page == 3) wc_draw_space();
+    else if (wc_page == 6) wc_draw_lpg();
+    else if (wc_page == 7) wc_draw_modosc();
+    else if (wc_page == 8) wc_draw_patch();
     else wc_draw_seq();
 }
 static void wc_draw_page(void)
 {
     if (cache->title_cache != 0x57c0U) { cache->title_cache = 0x57c0U; paint_fill(0, 0, 240, 240, WC_BG); }
     if (!(paint_rendering && paint_top >= 30)) {
-        uint32_t sig = 0x4000U | wc_page;
+        uint32_t sig = 0x4000U | wc_page | ((uint32_t)(wc_frame.card + 1) << 8) | ((uint32_t)wc_frame.dirty << 16);
         if (sig != cache->header_cache) {
             cache->header_cache = sig;
             uint16_t accent = wc_accents[wc_page];
             const char *name = wc_names[wc_page];
             unsigned w = 12U * (unsigned)strlen(name) + 8U;
-            char counter[4] = {(char)('1' + wc_page), '/', '6', 0};
+            char counter[4] = {(char)('1' + wc_page), '/', '9', 0};
             paint_fill(0, 0, 240, 27, WC_BG);
-            text(8, 6, "EASEL-1", 2, WC_INK, WC_BG);
-            text(98, 10, counter, 1, WC_NOTE, WC_BG);
+            text(8, 3, "EASEL-1", 2, WC_INK, WC_BG);
+            text(98, 7, counter, 1, WC_NOTE, WC_BG);
             paint_fill(232 - w, 4, w, 20, accent);
             text(236 - w, 7, name, 2, WC_WHITE, accent);
+            char card[20] = "CUSTOM";
+            if (wc_frame.card >= 0) {
+                char digits[12];
+                decimal(digits, wc_frame.card, 2);
+                strcpy(card, digits);
+                strcat(card, " ");
+                strncat(card, easel_preset_name((unsigned)wc_frame.card), 12);
+                if (wc_frame.dirty) strcat(card, "*");
+            }
+            text(8, 20, card, 1, WC_NOTE, WC_BG);
             paint_fill(0, 27, 240, 2, WC_INK);
         }
     }
@@ -1710,7 +1902,7 @@ static void wc_draw_page(void)
     if (!(paint_rendering && paint_top + PAINT_ROWS <= 229) && cache->hint_cache != 0x4849U) {
         cache->hint_cache = 0x4849U;
         paint_fill(0, 229, 240, 11, WC_BG);
-        text(6, 231, "ALGO PAGE  PRESETS ENGINE  HOME BACK", 1, WC_NOTE, WC_BG);
+        text(6, 231, "ALGO PAGE  SELECT CARD  PRESETS ENGINE", 1, WC_NOTE, WC_BG);
     }
 }
 #endif
