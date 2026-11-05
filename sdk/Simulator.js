@@ -34,7 +34,6 @@
           case 'release': c.sim_release(); break;
           case 'panic': c.sim_panic(); break;
           case 'tapTempo': c.sim_tap_tempo(); break;
-          case 'select': result=c.sim_select(message.track,message.source); break;
           
           case 'easel_enter':   result=c.sim_easel_enter(message.track); break;
           case 'easel_leave':   c.sim_easel_leave(message.track); break;
@@ -69,8 +68,8 @@
             new Uint8Array(c.memory.buffer,c.sim_file(),message.data.length).set(message.data);
             result=c.sim_midi(message.data.length); break;
           case 'export':
-            result=message.timbre?c.sim_timbre_export():message.patch?c.sim_patch_export():c.sim_export();
-            if (!result) data=new Uint8Array(c.memory.buffer,c.sim_file(),message.timbre?223:message.patch?156:4264).slice();
+            result=c.sim_export();
+            if (!result) data=new Uint8Array(c.memory.buffer,c.sim_file(),4264).slice();
             break;
           case 'snapshot':
             result=c.sim_export();
@@ -90,26 +89,11 @@
             }
             break;
           case 'import':
-            if (!message.data || (message.timbre?message.data.length!==223:message.patch?message.data.length!==156:![4048,4064,4264].includes(message.data.length))) throw Error('文件长度无效');
+            if (!message.data || ![4048,4064,4264].includes(message.data.length)) throw Error('文件长度无效');
             new Uint8Array(c.memory.buffer,c.sim_file(),message.data.length).set(message.data);
-            result=message.timbre?c.sim_timbre_import():message.patch?c.sim_patch_import():c.sim_import(message.data.length); break;
-          case 'library-read':
-            result=c.sim_library_read(message.bank);if(!result)data=new Uint8Array(c.memory.buffer,c.sim_file(),4096).slice();break;
-          case 'library-write':
-            if(!(message.data instanceof Uint8Array)||message.data.length!==4096)throw Error('音色库长度无效');
-            new Uint8Array(c.memory.buffer,c.sim_file(),4096).set(message.data);result=c.sim_library_write(message.bank);break;
+            result=c.sim_import(message.data.length); break;
+          case 'select': result=c.sim_select(message.track,6); break;
           case 'clear': c.sim_clear(); break;
-          case 'samples': {
-            if (!(message.data instanceof Uint8Array) || message.data.length<512 || message.data.length>446464) throw Error('采样库长度无效');
-            const flash=new Uint8Array(c.memory.buffer,c.sim_flash()+69632,466944),previous=flash.slice();
-            flash.fill(255,0,446464);flash.set(message.data);
-            result=c.sim_sample_bank(message.data.length);
-            if(result){
-              new Uint8Array(c.memory.buffer,c.sim_flash()+69632,466944).set(previous);
-              c.sim_sample_bank(previous.length);
-            }
-            break;
-          }
           case 'tick': for(let i=0;i<Math.min(32,message.blocks>>>0);i++)c.sim_render();break;
           default: throw Error('未知仿真操作');
         }
@@ -219,7 +203,7 @@
   globalThis.FM1SimulatorAudioSource='('+audioThread.toString()+')('+coreRuntime.toString()+');';
 
   if (typeof document === 'undefined') return;
-  const $ = id=>document.getElementById(id), sources=['DX7','303','808','PSG','PLUCK','SAMPLER'];
+  const $ = id=>document.getElementById(id);
   const storageKey='fm1.simulator.flash.v4',pending=new Map();
   let context,node,gain,analyser,meterData,state,workspace,preview,wasm,ready=false,starting=false,audioOn=false,handoff=false,sequence=0,selectedFile,fileRevision=0,voices=[],midiInput,midiAccess,midiConnecting=false,presetBusy=false;
   const waiting=[],wakingKeys=new Map();let startTask,wakingPlay,muted=false;
@@ -239,8 +223,6 @@
     $('sim-midi').disabled=!ready||midiConnecting||!navigator.requestMIDIAccess;
     FM1I18n.text($('sim-start'),starting?'正在开启声音…':muted?'取消静音':'静音');
     $('sim-start').setAttribute('aria-pressed',String(muted));
-    $('sim-patch-export').disabled=!ready||!state||state[8+state[0]*20]!==0;
-    $('sim-file-apply').disabled=!ready||!selectedFile||(selectedFile.patch&&(!state||state[8+state[0]*20]!==0));
     $('sim-placeholder').hidden=ready;
     FM1I18n.text($('sim-engine-state'),ready?'面板已就绪':'正在载入');
     FM1I18n.text($('sim-audio-state'),audioOn?'声音已开启':muted?'静音编辑':'点琴键即可发声');
@@ -316,14 +298,8 @@
       pending.set(id,{resolve,reject,timer});dispatch({type,id,...args});
     });
   }
-  globalThis.FM1SamplePreview = data => request('samples', {data});
-  async function select(track,source) {
-    try {await request('select',{track,source});}
-    catch(error){
-      if(state){$('sim-track').value=state[0];$('sim-source').value=state[8+state[0]*20];}
-      throw error;
-    }
-  }
+
+  async function select(track) { await request('select',{track}); }
 
   function receive(message) {
     if(message.id){const item=pending.get(message.id);if(item){clearTimeout(item.timer);pending.delete(message.id);message.error?item.reject(Error(message.error)):item.resolve(message.data);}return;}
@@ -355,7 +331,7 @@
       if(pageTips[state[1]])say(pageTips[state[1]]);
     }
     if(contextChanged){
-      for(const button of document.querySelectorAll('[data-sim-page]'))button.setAttribute('aria-pressed',String(Number(button.dataset.simPage)===state[1]||(Number(button.dataset.simPage)===15&&state[1]===5)));
+      for(const button of document.querySelectorAll('[data-sim-page]'))button.setAttribute('aria-pressed',String(Number(button.dataset.simPage)>=19?state[1]===19&&state[5]===Number(button.dataset.simPage)-19:Number(button.dataset.simPage)===state[1]));
       const presetUse={0:'换整套预设',1:'选步进',3:fm?'开关 FM 包络':[2,5].includes(state[8+state[0]*20])?'选择鼓／采样声部':'此页不使用',4:'此页不使用',5:'换当前轨音色／鼓声部',8:'选保存槽位',10:'切换轨道发送／共用细调',12:'选步进',13:'选步进',15:'换当前轨音色',16:'选整套预设',17:'此页不使用'};
       FM1I18n.text($('sim-context'),'面板 PRESETS 旋钮：'+(presetUse[state[1]]||'以屏幕下方标签为准')+'。网页“内置预设”始终切换整套项目。');
     }
@@ -390,11 +366,11 @@
       FM1I18n.text($('sim-play-control'),state[14]?'暂停':'播放');
       $('sim-play-control').setAttribute('aria-pressed',String(!!state[14]));
     }
-    if(selectionChanged){$('sim-track').value=state[0];$('sim-source').value=state[8+state[0]*20];}
-    for(let t=0;t<8;t++){
+    if(selectionChanged){$('sim-track').value=state[0];}
+    for(let t=0;t<4;t++){
       const at=8+t*20,{button,source,level,dots}=ui.tracks[t];
       if(!before||before[0]!==state[0])button.classList.toggle('selected',state[0]===t);
-      if(!before||before[at]!==state[at])FM1I18n.text(source,sources[state[at]]);
+      if(!before||before[at]!==state[at])FM1I18n.text(source,'EASEL');
       if(!before||before[at+3]!==state[at+3])level.style.setProperty('--level',(state[at+3]/127*100)+'%');
       for(let byte=0;byte<8;byte++){
         const mask=at+12+byte,changed=before?before[mask]^state[mask]:255;
@@ -686,13 +662,12 @@
   }
   function tap(index){control(0,index,1);control(0,index,0);}
   function buildControls() {
-    for(let t=0;t<8;t++){
+    for(let t=0;t<4;t++){
       const button=document.createElement('button');button.id='sim-track-'+t;button.className='track-tile';button.dataset.sim='';button.disabled=true;
       button.innerHTML='<span class="track-number">'+String(t+1).padStart(2,'0')+'</span><span class="track-source"></span><span class="track-level"></span><span class="track-steps">'+'<i></i>'.repeat(64)+'</span>';
-      button.addEventListener('click',()=>select(t,6).catch(e=>say(e.message)));$('sim-tracks').append(button);
+      button.addEventListener('click',()=>select(t).catch(e=>say(e.message)));$('sim-tracks').append(button);
       const option=document.createElement('option');option.value=t;FM1I18n.text(option,'轨道 '+(t+1));$('sim-track').append(option);
     }
-    sources.forEach((name,type)=>{const option=document.createElement('option');option.value=type;option.textContent=name;$('sim-source').append(option);});
     const encoders=[['MASTER',-1,105,100],['SELECT',0,215,100],['PRESETS',6,105,205],['ALGORITHM',1,215,205],['KNOB 1',2,610,100],['KNOB 2',3,714,100],['KNOB 3',4,818,100],['KNOB 4',5,922,100]];
     for(const [label,index,x,y]of encoders){
       const box=document.createElement('div');box.className='encoder';box.style.left=(x/10)+'%';box.style.top=(y/6.24)+'%';
@@ -763,12 +738,7 @@
     say('已打开'+FM1I18n.sourceText(button)+'；用面板旋钮调整，HOME 返回。');
   });
   $('sim-volume').oninput=()=>setVolume(Number($('sim-volume').value));
-  $('sim-track').onchange=()=>action(()=>select(Number($('sim-track').value),6));
-  $('sim-source').onchange=()=>action(async()=>{
-    const track=Number($('sim-track').value),source=Number($('sim-source').value);
-    if(confirm(FM1I18n.t('切换音源将重置此轨的音色；鼓与旋律之间切换还会清空此轨步进。继续吗？')))await select(track,source);
-    else $('sim-source').value=String(state[8+track*20]);
-  });
+  $('sim-track').onchange=()=>action(()=>select(Number($('sim-track').value)));
   $('sim-project-export').onclick=()=>action(async()=>{save(FM1Web.projectFile(await request('export')),'FM1-simulation.fm1');say('已导出仿真工作区项目。');});
   async function loadPreset(index){
     if(presetBusy||!Number.isInteger(index)||index<0||index>=16)return;
@@ -782,43 +752,25 @@
   $('sim-factory-load').onclick=()=>action(()=>loadPreset(Number($('sim-factory').value)));
   $('sim-factory').onchange=()=>action(()=>loadPreset(Number($('sim-factory').value)));
   $('sim-preset-prev').onclick=()=>action(()=>loadPreset(workspace?.factory?Math.max(0,workspace.slot-1):0));
-  $('sim-preset-next').onclick=()=>action(()=>loadPreset(workspace?.factory?Math.min(15,workspace.slot+1):0));
+  $('sim-preset-next').onclick=()=>action(()=>loadPreset(workspace?.factory?Math.min(13,workspace.slot+1):0));
   $('sim-factory-export').onclick=()=>action(async()=>{
     const index=Number($('sim-factory').value),data=await request('factory',{index});
     save(FM1Web.projectFile(data),'FM1-'+String(index+1).padStart(2,'0')+'-'+String.fromCharCode(...data.slice(3836,3848)).trim()+'.fm1');
     say('官方工程已导出，当前仿真工作区保持不变。');
   });
-  $('sim-timbre-export').onclick=()=>action(async()=>{save(FM1Web.timbreFile(await request('export',{timbre:true})),'FM1-timbre.fm1t');say('已导出当前轨道的音源类型与全部音色参数。');});
-  $('sim-patch-export').onclick=()=>action(async()=>{save(FM1Web.voiceFile(await request('export',{patch:true})),'FM1-voice.syx');say('已导出当前轨道的 DX7 音色。');});
-  for(let i=0;i<128;i++){const o=document.createElement('option');o.value=i;o.textContent=(i+1)+' · '+String.fromCharCode(65+(i>>5));$('sim-library-slot').append(o);}
-  $('sim-library-save').onclick=()=>action(async()=>{
-    const program=Number($('sim-library-slot').value),patch=selectedFile?.patch?voices[Number($('sim-voice').value)]:await request('export',{patch:true});
-    const raw=await request('library-read',{bank:program>>5});raw.set(FM1Web.packVoice(patch),(program&31)*128);
-    await request('library-write',{bank:program>>5,data:raw});say('已保存到仿真独立音色库的音色 '+(program+1)+'。');
-  });
-  $('sim-library-bank').onclick=()=>action(async()=>{
-    const bank=Number($('sim-library-slot').value)>>5,raw=selectedFile?.bank||FM1Web.voiceBank(voices);
-    if(!confirm(FM1I18n.t('用文件替换所选位置所在组的全部 32 个仿真音色？')))return;
-    await request('library-write',{bank,data:raw});say('整组音色已写入仿真库。');
-  });
-  $('sim-library-export').onclick=()=>action(async()=>{
-    const bank=Number($('sim-library-slot').value)>>5;save(FM1Web.bankFile(await request('library-read',{bank})),'FM1-bank-'+String.fromCharCode(65+bank)+'.syx');
-  });
   $('sim-file').onchange=async()=>{
-    const revision=++fileRevision;selectedFile=undefined;voices=[];$('sim-voice').replaceChildren();$('sim-voice').hidden=true;availability();const file=$('sim-file').files[0];if(!file)return;
+    const revision=++fileRevision;selectedFile=undefined;availability();const file=$('sim-file').files[0];if(!file)return;
     try {
     if(file.size>4280)throw Error('请选择 .fm1 项目、.fm1t 音色或 DX7 .syx 文件');const bytes=new Uint8Array(await file.arrayBuffer());
     if(revision!==fileRevision)return;
-    if(bytes[0]===240){voices=FM1Web.readVoices(bytes);voices.forEach((voice,i)=>{const option=document.createElement('option');option.value=i;option.textContent=(i+1)+' · '+String.fromCharCode(...voice.slice(145,155)).replace(/[^\x20-\x7e]/g,'?');$('sim-voice').append(option);});selectedFile={patch:true,bank:bytes.length===4104?bytes.slice(6,4102):undefined};}
-    else if(bytes[3]===84) selectedFile={timbre:true,data:FM1Web.readTimbreFile(bytes)};
-    else selectedFile={data:FM1Web.readProjectFile(bytes)};
-    $('sim-voice').hidden=!selectedFile.patch;availability();say(selectedFile.patch&&state[8+state[0]*20]!==0?'音色校验通过，请先选择 DX7 轨道再导入。':'文件校验通过，点击“导入到仿真”应用。');
+    selectedFile={data:FM1Web.readProjectFile(bytes)};
+    availability();say('文件校验通过，点击“导入到仿真”应用。');
     }catch(error){if(revision===fileRevision)say(error.message);}
   };
   $('sim-file-apply').onclick=()=>action(async()=>{
-    if(!selectedFile)return;if(!confirm(FM1I18n.t('将替换仿真工作区'+(selectedFile.patch?'当前 DX7 音色':selectedFile.timbre?'当前轨道音色':'项目')+'，继续吗？')))return;
-    const data=selectedFile.patch?voices[Number($('sim-voice').value)]:selectedFile.data;
-    await request('import',{patch:!!selectedFile.patch,timbre:!!selectedFile.timbre,data});say('已导入仿真工作区；按面板 SAVE 保存到本地仿真槽。');
+    if(!selectedFile)return;if(!confirm(FM1I18n.t('将替换仿真工作区'+'项目'+'，继续吗？')))return;
+    const data=selectedFile.data;
+    await request('import',{data});say('已导入仿真工作区；按面板 SAVE 保存到本地仿真槽。');
   });
   $('sim-read-device').onclick=()=>action(async()=>{
     if(!ready)throw Error('请先启动仿真');
@@ -871,7 +823,7 @@
   const ui={
     controls:document.querySelectorAll('[data-sim]'),holds:document.querySelectorAll('[data-hold]'),
     leds:Array.from(document.querySelectorAll('[data-led]'),button=>[button,168+Number(button.dataset.led)]),
-    tracks:Array.from({length:8},(_,t)=>{const button=$('sim-track-'+t);return{button,source:button.querySelector('.track-source'),level:button.querySelector('.track-level'),dots:button.querySelectorAll('i')};})
+    tracks:Array.from({length:4},(_,t)=>{const button=$('sim-track-'+t);return{button,source:button.querySelector('.track-source'),level:button.querySelector('.track-level'),dots:button.querySelectorAll('i')};})
   };
 
   /* Easel-1 Web API */
