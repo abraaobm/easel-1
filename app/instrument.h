@@ -2,8 +2,6 @@
 #ifndef FM1_INSTRUMENT_H
 #define FM1_INSTRUMENT_H
 #include "engine.h"
-#include "bass303.h"
-#include "sampledrum.h"
 #include "fm1.h"
 #include "fm1_param.h"
 
@@ -11,7 +9,6 @@ enum {
     GROOVE_TRACKS = 8,
     GROOVE_STEPS = 64,
     GROOVE_VOICES = 8,
-    GROOVE_303_VOICES = BASS303_VOICES,
     GROOVE_DRUMS = 11,
     GROOVE_PADS = 16,
     GROOVE_TONE_PARAMS = 12
@@ -229,7 +226,7 @@ int groove_project_import(const uint8_t *bytes, unsigned length);
 int groove_project_export(uint8_t *bytes, unsigned capacity);
 /* Read-only factory projects. Building only writes the caller's
  * snapshot; loading changes RAM and supports undo, never writes user slots. */
-enum { GROOVE_FACTORY_PROJECTS = 16 };
+enum { GROOVE_FACTORY_PROJECTS = 14 };   /* one per Easel-1 factory card */
 const char *groove_factory_name(unsigned index);
 int groove_factory_build(unsigned index, struct groove_project *project);
 int groove_factory_load(unsigned index);
