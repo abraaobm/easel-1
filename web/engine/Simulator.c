@@ -2,8 +2,6 @@
 /* Browser platform adapter with Easel-1 hybrid engine. */
 #include "fm_patch.h"
 #include "internal.h"
-#include "sampledrum.h"
-#include "fm1_sea.h"
 #include "fm1_engine_control.h"
 #include "audio_output.h"
 #include "fm1_audio_io.h"
@@ -27,11 +25,7 @@ static unsigned gate, midi_read, midi_write, midi_reset;
 static uint8_t radio_features, radio_role;
 static struct { uint8_t data[3], count; } midi[MIDI_QUEUE];
 static int32_t previous[FM1_BLOCK_WORDS];
-static int32_t scratch_audio[FM1_BLOCK_WORDS]; 
 static float output[FM1_BLOCK_WORDS];
-static int16_t *sample_input;
-static uint8_t *sample_encoded;
-static unsigned sample_frames, sample_bytes;
 
 extern void groove_screen_snapshot(uint8_t state[8]);
 extern int groove_screen_open(unsigned target);
@@ -223,9 +217,6 @@ EXPORT("sim_boot") void sim_boot(unsigned clear)
 {
     if (clear & 1U) {
         memset(flash, 255, sizeof flash);
-        unsigned bytes;
-        const uint8_t *factory = sampledrum_factory(&bytes);
-        if (bytes <= GROOVE_SAMPLE_BYTES) memcpy(flash + GROOVE_SAMPLE_OFFSET, factory, bytes);
         ++flash_revision;
     }
     memset(&controls, 0, sizeof controls); controls.battery = 900; controls.knob = 1023;
@@ -236,12 +227,8 @@ EXPORT("sim_boot") void sim_boot(unsigned clear)
     radio_features = FM1_BT_AUDIO | FM1_BT_MIDI;
     radio_role = FM1_BLE_PERIPHERAL;
     fm1_web_init();
-    if (!(clear & 2U)) groove_screen_open(0);
+    if (!(clear & 2U)) groove_screen_open(19);      /* boot straight into the Easel panel (VOICE) */
     fm1_web_control();
-    while (groove_samples_status() == 1) groove_samples_poll();
-
-    uint8_t patch[156];
-    if (groove_fm_copy(7, patch, NULL) == 0) easel_deserialize(patch);
 }
 EXPORT("sim_control") void sim_control(unsigned kind, unsigned index, int value)
 {
@@ -288,10 +275,6 @@ EXPORT("sim_open") int sim_open(unsigned target)
 EXPORT("sim_preset") int sim_preset(unsigned slot)
 {
     int result = groove_screen_preset(slot);
-    if (!result) {
-        uint8_t patch[156];
-        if (groove_fm_copy(7, patch, NULL) == 0) easel_deserialize(patch);
-    }
     fm1_web_control();
     return result;
 }
@@ -335,19 +318,11 @@ EXPORT("sim_project_revision") uint32_t sim_project_revision(void) { return groo
 EXPORT("sim_count_in") unsigned sim_count_in(void) { return groove_sequence_count_in(); }
 EXPORT("sim_select") int sim_select(unsigned track, unsigned source)
 {
-    if (track >= GROOVE_TRACKS || source > GROOVE_SOURCES) return -1;
+    (void)source;                                   /* every track plays the Easel-1 */
+    if (track >= GROOVE_TRACKS) return -1;
     uint8_t view[8]; groove_screen_snapshot(view);
-    if (source == GROOVE_SOURCES && view[1] == 10U) {
-        sim_release(); sim_control(2, 0, (int)track - view[0]); return 0;
-    }
-    sim_open(0); groove_screen_snapshot(view);
+    sim_release();
     sim_control(2, 0, (int)track - view[0]);
-    if (source < GROOVE_SOURCES) {
-        int delta = (int)source - (int)groove_source_type(track);
-        if (delta) sim_control(2, 3, delta);
-        if (delta) tap(9);
-        if (groove_source_type(track) != source) return -1;
-    }
     return 0;
 }
 EXPORT("sim_block_frames") unsigned sim_block_frames(void) { return FM1_BLOCK_FRAMES; }
@@ -367,8 +342,7 @@ EXPORT("sim_render") const float *sim_render(void)
         send(midi[midi_read].data, midi[midi_read].count); midi_read = (midi_read + 1) % MIDI_QUEUE;
     }
     
-    (void)fm1_engine_render(scratch_audio, FM1_BLOCK_FRAMES);
-    easel_mix(previous, FM1_BLOCK_FRAMES);
+    (void)fm1_engine_render(previous, FM1_BLOCK_FRAMES);
     
     for (unsigned i = 0; i < FM1_BLOCK_WORDS; ++i)
         output[i] = (float)previous[i] * (1.0f / 8388608.0f);
@@ -400,51 +374,8 @@ EXPORT("sim_frame_changes") unsigned sim_frame_changes(void)
 EXPORT("sim_flash") uint8_t *sim_flash(void) { return flash; }
 EXPORT("sim_flash_revision") uint32_t sim_flash_revision(void) { return flash_revision; }
 EXPORT("sim_file") uint8_t *sim_file(void) { return file_buffer; }
-EXPORT("sim_factory") const uint8_t *sim_factory(void)
-{ return sampledrum_factory(NULL); }
-EXPORT("sim_factory_size") unsigned sim_factory_size(void)
-{ unsigned bytes; (void)sampledrum_factory(&bytes); return bytes; }
-EXPORT("sim_sample_alloc") int16_t *sim_sample_alloc(unsigned frames)
-{
-    free(sample_input); free(sample_encoded); sample_encoded = NULL; sample_input = NULL;
-    sample_bytes = sample_frames = 0;
-    if (!frames || frames > SAMPLE_DRUM_MAX_FRAMES) return NULL;
-    sample_input = malloc(((frames + 319U) / 320U) * 640U);
-    if (sample_input) sample_frames = frames;
-    return sample_input;
-}
-EXPORT("sim_sample_encode") const uint8_t *sim_sample_encode(void)
-{
-    free(sample_encoded);
-    sample_encoded = sampledrum_encode(sample_input, sample_frames, &sample_bytes);
-    return sample_encoded;
-}
-EXPORT("sim_sample_bytes") unsigned sim_sample_bytes(void) { return sample_bytes; }
-EXPORT("sim_sample_bank") int sim_sample_bank(unsigned bytes)
-{
-    if (bytes < 512 || bytes > GROOVE_SAMPLE_BYTES) return -1;
-    ++flash_revision;
-    groove_fm_library_init();
-    groove_samples_init();
-    while (groove_samples_status() == 1) groove_samples_poll();
-    return groove_samples_status() == 2 ? 0 : -1;
-}
-EXPORT("sim_export") int sim_export(void) { 
-    uint8_t patch[156];
-    easel_serialize(patch);
-    groove_fm_import(7, patch);
-    return groove_project_export(file_buffer, sizeof file_buffer); 
-}
-EXPORT("sim_import") int sim_import(unsigned bytes) { 
-    int r = groove_project_import(file_buffer, bytes); 
-    if (!r) {
-        uint8_t patch[156];
-        if (groove_fm_copy(7, patch, NULL) == 0) easel_deserialize(patch);
-    }
-    return r;
-}
-EXPORT("sim_library_read") int sim_library_read(unsigned bank) { return groove_fm_library_read(bank,file_buffer); }
-EXPORT("sim_library_write") int sim_library_write(unsigned bank) { return groove_fm_library_write(bank,file_buffer); }
+EXPORT("sim_export") int sim_export(void) { return groove_project_export(file_buffer, sizeof file_buffer); }
+EXPORT("sim_import") int sim_import(unsigned bytes) { return groove_project_import(file_buffer, bytes); }
 EXPORT("sim_factory_name") const char *sim_factory_name(unsigned index) { return groove_factory_name(index); }
 EXPORT("sim_factory_project") int sim_factory_project(unsigned index)
 {
@@ -460,14 +391,6 @@ EXPORT("sim_factory_project") int sim_factory_project(unsigned index)
     }
     return r;
 }
-EXPORT("sim_patch_export") int sim_patch_export(void)
-{ uint8_t v[8]; groove_screen_snapshot(v); return groove_fm_copy(v[0], file_buffer, NULL); }
-EXPORT("sim_patch_import") int sim_patch_import(void)
-{ uint8_t v[8]; groove_screen_snapshot(v); return groove_fm_import(v[0], file_buffer); }
-EXPORT("sim_timbre_export") int sim_timbre_export(void)
-{ uint8_t v[8]; groove_screen_snapshot(v); return groove_timbre_export(v[0], file_buffer, sizeof file_buffer); }
-EXPORT("sim_timbre_import") int sim_timbre_import(void)
-{ uint8_t v[8]; groove_screen_snapshot(v); return groove_timbre_import(v[0], file_buffer, sizeof(struct groove_preset)); }
 EXPORT("sim_midi_from") int sim_midi_from(unsigned source, unsigned bytes)
 {
     if (source >= 3 || !bytes || bytes > 1024) return -1;
