@@ -573,6 +573,7 @@
     await waitForApi();
     btn.disabled = false;
     btn.onclick = openPanel;
+    openPanel();                         /* the instrument opens on the Easel panel */
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', main);
