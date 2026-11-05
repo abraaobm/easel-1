@@ -1,0 +1,70 @@
+name: Phase 1 cleanup
+# One-time, manual: removes the files that fall outside the Easel-1 scope.
+# Run it from the Actions tab (Run workflow), then delete this file.
+on: workflow_dispatch
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove files outside the Easel-1 scope
+        run: |
+          git rm -q --ignore-unmatch -- \
+            app/fm_factory.c \
+            app/fm_factory.inc \
+            app/fm_library.c \
+            app/samples.c \
+            app/synth/bass303.h \
+            app/synth/drum808.h \
+            app/synth/sampledrum.h \
+            sdk/Samples.js \
+            sdk/WestCoast.js \
+            third_party/synth/bass303.c \
+            third_party/synth/bass303.h \
+            third_party/synth/bass303_state.h \
+            third_party/synth/drum808.c \
+            third_party/synth/drum808.h \
+            third_party/synth/drum808_state.h \
+            third_party/synth/dsp_math.h \
+            third_party/synth/emu2149.c \
+            third_party/synth/emu2149.h \
+            third_party/synth/pluck.c \
+            third_party/synth/pluck.h \
+            third_party/synth/psg.h \
+            third_party/synth/sampledrum.h \
+            third_party/synth/voices.h \
+            tools/Generate-Factory-DX7.mjs \
+            web/engine/effects.c \
+            web/synth/adsr.c \
+            web/synth/adsr.h \
+            web/synth/demo_bank.h \
+            web/synth/dx7core.c \
+            web/synth/dx7core.h \
+            web/synth/dx7ctrl.h \
+            web/synth/dx7env.c \
+            web/synth/dx7env.h \
+            web/synth/dx7lfo.c \
+            web/synth/dx7lfo.h \
+            web/synth/dx7math.c \
+            web/synth/dx7math.h \
+            web/synth/dx7note.c \
+            web/synth/dx7note.h \
+            web/synth/dx7pitchenv.c \
+            web/synth/dx7pitchenv.h \
+            web/synth/dx7synth.c \
+            web/synth/dx7synth.h \
+            web/synth/psg.c \
+            web/synth/sample_metadata.inc \
+            web/synth/sampledrum.c \
+            web/synth/sea_decode.c \
+            web/synth/sea_encode.h \
+            web/synth/synth_dx7.h \
+            web/synth/voices.c
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Phase 1: remove files outside the Easel-1 scope" || echo "Nothing left to remove"
+          git push
