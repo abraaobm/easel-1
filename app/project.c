@@ -450,8 +450,7 @@ static int recover_staging(void)
 {
     if (fm1_flash_size() < USER_BYTES)
         return FM1_FLASH_UNAVAILABLE;
-    int r = groove_fm_library_recover();
-    if (!r) r = tuning_recover();
+    int r = tuning_recover();
     if (r) return r;
     r = read_sector(STAGING_SECTOR);
     if (r)
