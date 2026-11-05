@@ -98,8 +98,8 @@ static int command(unsigned cmd, const uint8_t *data, unsigned n, uint8_t *out, 
     *count = 0;
     /* Additive capability reply; command 21 retains its old exact layout. */
     if (cmd == 22 && !n) {
-        out[0]=1; out[1]=128; out[2]=4; out[3]=(uint8_t)groove_fm_library_available();
-        put32(out+4,GROOVE_SAMPLE_LIMIT); out[8]=3; /* session roles and extended/synchronized delay */
+        out[0]=1; out[1]=128; out[2]=4; out[3]=0;     /* no DX7 library */
+        put32(out+4,0); out[8]=3; /* session roles and extended/synchronized delay */
         *count=9; return 0;
     }
     if (cmd == 21 && !n) {
@@ -132,27 +132,10 @@ static int command(unsigned cmd, const uint8_t *data, unsigned n, uint8_t *out, 
         fm1_engine_stats_read(&stats);
         put32(out, stats.submitted); put32(out + 4, stats.completed);
         put32(out + 8, stats.underruns); put32(out + 12, stats.midi_dropped);
-        out[16] = (uint8_t)groove_samples_status();
+        out[16] = 0;
         out[17] = (uint8_t)groove_edit_recording();
         *count = 18; return 0;
     }
-    if (cmd == 11 && !n) {
-        out[0] = (uint8_t)groove_samples_status();
-        put32(out + 1, groove_samples_size());
-        /* Region size, not the new-bank cap: SDK clients require this exact value.
-         * groove_samples_begin rejects banks over GROOVE_SAMPLE_LIMIT. */
-        put32(out + 5, GROOVE_SAMPLE_BYTES);
-        *count = 9; return 0;
-    }
-    if (cmd == 12 && n == 4) return groove_samples_begin(get32(data));
-    if (cmd == 13 && n > 4 && n <= 132) return groove_samples_write(get32(data), data + 4, n - 4);
-    if (cmd == 14 && !n) return groove_samples_finish();
-    if (cmd == 15 && n == 5 && data[4] <= 64) {
-        r = groove_samples_read(get32(data), out, data[4]);
-        if (!r) *count = data[4];
-        return r;
-    }
-    if (cmd == 16 && !n) { groove_samples_cancel(); return 0; }
     if (cmd == 0 && !n) {
         out[0] = 4;
         out[1] = GROOVE_PROJECT_SLOTS;
@@ -166,14 +149,11 @@ static int command(unsigned cmd, const uint8_t *data, unsigned n, uint8_t *out, 
         return 0;
     }
     if (cmd == 1 && n == 2) {
-        unsigned size = data[0] == 2 ? sizeof(struct groove_preset) : data[0] == 1 ? 156
-                        : data[0] == 4 ? 4096 : data[0] == 3 ? GROOVE_PROJECT_TUNED_BYTES : GROOVE_PROJECT_BYTES;
+        unsigned size = data[0] == 1 ? 156 : data[0] == 3 ? GROOVE_PROJECT_TUNED_BYTES : GROOVE_PROJECT_BYTES;
         r = transfer_begin(data[0], data[1], size, 0);
         if (!r) {
-            r = data[0] == 4 ? groove_fm_library_read(data[1],transfer)
-                : data[0] == 2 ? groove_timbre_export(data[1], transfer, size)
-                : data[0] == 1 ? groove_fm_copy(data[1], transfer, NULL)
-                        : groove_project_export(transfer, size);
+            r = data[0] == 1 ? groove_fm_copy(data[1], transfer, NULL)
+                : groove_project_export(transfer, size);
             if (r)
                 transfer_cancel();
             else {
@@ -200,9 +180,7 @@ static int command(unsigned cmd, const uint8_t *data, unsigned n, uint8_t *out, 
         }
     } else if (cmd == 5 && n == 4 && transfer && transfer_writing && transferred == transfer_size) {
         if (get32(data) == ~groove_crc32(~0U, transfer, transfer_size)) {
-            r = transfer_kind == 4 ? groove_fm_library_write(transfer_target,transfer)
-                : transfer_kind == 2 ? groove_timbre_import(transfer_target, transfer, transfer_size)
-                : transfer_kind == 1 ? groove_fm_import(transfer_target, transfer)
+            r = transfer_kind == 1 ? groove_fm_import(transfer_target, transfer)
                               : groove_project_import(transfer, transfer_size);
             if (!r)
                 transfer_cancel();
@@ -251,7 +229,7 @@ void groove_transfer_poll(void)
     if (c->request_length == n && !memcmp(c->request, incoming.bytes, n) && c->reply_length) {
         incoming.length = 0;
         c->started=now;
-        if (source==session_source || (!transfer && groove_samples_status()!=3)) last_activity=now;
+        if (source==session_source || !transfer) last_activity=now;
         c->pending=fm1_midi_send_port(source,c->reply,c->reply_length)==-2;
         return;
     }
@@ -309,7 +287,7 @@ void groove_transfer_poll(void)
     }
     if (value || bits >= 7)
         goto discard;
-    if ((transfer || groove_samples_status() == 3) && source != session_source) {
+    if (transfer && source != session_source) {
         uint8_t busy[12]; memcpy(busy,message,8); busy[5]|=64;
         busy[8]=64-FM1_FLASH_BUSY; busy[9]=0; unsigned sum=0;
         for (unsigned i=1;i<10;++i) sum+=busy[i];
@@ -324,7 +302,7 @@ void groove_transfer_poll(void)
     c->reply_length = 0;
     unsigned count = 0;
     int r = command(c->request[5], data, bytes, response + 1, &count);
-    if (!r && (transfer || groove_samples_status() == 3)) session_source = source;
+    if (!r && transfer) session_source = source;
     response[0] = (uint8_t)(r < 0 ? 64 - r : r);
     memcpy(c->reply, c->request, 8);
     c->reply[5] |= 64;
