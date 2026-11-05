@@ -122,11 +122,6 @@ static FM1_AUDIO_CODE void enqueue(unsigned lane, unsigned owner, unsigned ports
 }
 FM1_AUDIO_CODE void groove_midi_note(unsigned track, unsigned note, unsigned velocity)
 {
-#ifdef FM1_OPEN_WEB
-    // Desvia todas as notas (Sequenciador, Arp, Teclas) para o nosso motor West Coast
-    extern void easel_note_on(uint8_t note, uint8_t vel);
-    easel_note_on((uint8_t)note, (uint8_t)velocity);
-#endif
     if (!groove_midi_mode(track)) return;
     unsigned ch = (config.channel[track >> 1] >> (4U * (track & 1U))) & 15U;
     enqueue(track & 1U, track, config.flags & 7U, (velocity ? 0x90U : 0x80U) | ch, note, velocity);
