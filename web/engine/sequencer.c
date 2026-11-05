@@ -72,18 +72,11 @@ __attribute__((cold, minsize)) int groove_sequence_valid(const struct groove_pro
             const struct groove_step *v = &p->step[t][s];
             if (v->note > 127 || v->velocity > 127)
                 return 0;
-            if (p->preset[t].type == GROOVE_808 || p->preset[t].type == GROOVE_SAMPLE) {
-                if (v->note & 15U)
-                    return 0; /* Low nibble is reserved for drums. */
-                if (p->preset[t].type == GROOVE_SAMPLE && (v->drums >> SAMPLE_DRUM_PADS))
-                    return 0; /* Sampler patterns address only the eight active pads. */
-            } else {
-                unsigned chord = v->drums & 31U;
-                if ((v->drums & 0xc000U /* bits 14..15 reserved; bit 13 = alt (GROOVE_STEP_ALT) */) || chord > 16 || (chord && !o->chord[chord - 1][0]))
-                    return 0;
-                if (chord && v->note + o->chord[chord - 1][o->chord[chord - 1][0] - 1] > 127)
-                    return 0;
-            }
+            unsigned chord = v->drums & 31U;
+            if ((v->drums & 0xc000U /* bits 14..15 reserved; bit 13 = alt (GROOVE_STEP_ALT) */) || chord > 16 || (chord && !o->chord[chord - 1][0]))
+                return 0;
+            if (chord && v->note + o->chord[chord - 1][o->chord[chord - 1][0] - 1] > 127)
+                return 0;
         }
     for (unsigned i = 0; i < GROOVE_LOCKS; ++i) {
         const struct groove_parameter_lock *l = &o->lock[i];
@@ -91,13 +84,7 @@ __attribute__((cold, minsize)) int groove_sequence_valid(const struct groove_pro
             continue;
         if (l->track >= 8 || l->step >= 64 || l->value > 127)
             return 0;
-        unsigned type = p->preset[l->track].type, limit = type == GROOVE_DX7      ? 145
-                                                          : type == GROOVE_303    ? 12
-                                                          : type == GROOVE_SAMPLE ? SAMPLE_DRUM_PADS * SAMPLE_DRUM_PARAMS
-                                                          : type == GROOVE_808    ? 1
-                                                                                  : 4;
-        if (l->parameter >= limit)
-            return 0;
+        /* Lock parameters are reserved for Easel parameters; older ids stay readable. */
         for (unsigned j = 0; j < i; ++j)
             if (o->lock[j].track == l->track && o->lock[j].step == l->step)
                 return 0;
