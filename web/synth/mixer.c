@@ -3,16 +3,6 @@
 #include "fixed.h"
 #include <string.h>
 
-/* Shared effect settings; processing is in web/engine/effects.c. */
-void fm1_fx_set(int32_t decay, int32_t feedback, int32_t level, unsigned delay);
-void fm1_fx_configure(const uint8_t values[4], unsigned delay_ticks)
-{
-    fm1_fx_set(268435456 + (int32_t)((int64_t)values[0] * 644245094 / 127),
-        (int32_t)((int64_t)values[2] * 858993459 / 127),
-        (int32_t)((int64_t)values[3] * FM_Q30_ONE / 127),
-        delay_ticks);
-}
-
 /* Preserve headroom until the master limiter. */
 FM1_DSP_CODE void fm1_bus_output128(int32_t *out, const int32_t *left, const int32_t *right)
 {
