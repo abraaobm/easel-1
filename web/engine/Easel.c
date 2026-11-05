@@ -388,6 +388,13 @@ void easel_ui_lpg(uint8_t *amp, uint8_t *bright, uint8_t *ideal, unsigned count)
     }
 }
 
+/* Silence every voice and clear the reverb tail. */
+void easel_panic(void) {
+    for (int i = 0; i < 8; i++) voices[i].active = 0;
+    memset(rev_buf_L, 0, sizeof rev_buf_L);
+    memset(rev_buf_R, 0, sizeof rev_buf_R);
+}
+
 void easel_note_on(uint8_t note, uint8_t vel) {
     if (!vel) return;
     
@@ -608,6 +615,21 @@ void easel_preset_load(unsigned index) {
     easel_serialize(buf);
     memcpy(card_snapshot, buf, sizeof card_snapshot);
     preset_current = (int)index;
+}
+/* The patch of a card, without touching the live sound or the loaded-card state. */
+void easel_card_serialize(unsigned index, uint8_t out[156]) {
+    uint8_t keep[156], saved_snapshot[sizeof card_snapshot];
+    int saved_current = preset_current;
+    memset(out, 0, 156);
+    if (index >= CARD_COUNT) return;
+    memset(keep, 0, sizeof keep);
+    easel_serialize(keep);
+    memcpy(saved_snapshot, card_snapshot, sizeof card_snapshot);
+    easel_preset_load(index);
+    easel_serialize(out);
+    easel_deserialize(keep);
+    memcpy(card_snapshot, saved_snapshot, sizeof card_snapshot);
+    preset_current = saved_current;
 }
 /* 1 once the loaded card has been edited. */
 int easel_preset_dirty(void) {
