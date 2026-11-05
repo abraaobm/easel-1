@@ -129,7 +129,6 @@ $replacements = @{
     '/*FM1_I18N*/'=[IO.File]::ReadAllText((Join-Path $root 'sdk/I18n.js'))
     '/*FM1_SCRIPT*/'=[IO.File]::ReadAllText((Join-Path $root 'sdk/WebUpdate.js'))
     '/*FM1_SIM_SCRIPT*/'=[IO.File]::ReadAllText((Join-Path $root 'sdk/Simulator.js'))
-    '/*FM1_SAMPLE_SCRIPT*/'=[IO.File]::ReadAllText((Join-Path $root 'sdk/Samples.js'))
     '/*FM1_EASEL_SCRIPT*/'=[IO.File]::ReadAllText((Join-Path $root 'web/EaselFM.js'))
 }
 foreach ($file in @('THIRD_PARTY.md','LICENSE.md')) {
